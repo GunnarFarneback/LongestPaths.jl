@@ -1,8 +1,8 @@
 # LongestPaths.jl
 
-The LongestPaths package is dedicated to finding long simple paths,
-i.e. no repeated vertex, in a graph, as well as upper bounds on the
-maximum length.
+LongestPaths is a Julia package dedicated to finding long simple
+paths, i.e. no repeated vertex, in a graph, as well as upper bounds on
+the maximum length.
 
 The longest path problem is NP-hard, so the time needed to find the
 solution grows quickly with the size of the graph, unless it has some
@@ -17,6 +17,39 @@ with vertex one and ending anywhere. If time limits or other
 restrictions prevent finding an optimal path, an upper bound on the
 maximum length is returned together with the longest path found.
 
+## Adding LongestPaths
+
+In Julia pkg mode (press `]`):
+```
+pkg> add https://github.com/GunnarFarneback/LongestPaths.jl.git
+```
+
+## Usage Example
+```
+julia> using LongestPaths, LightGraphs
+
+julia> g = erdos_renyi(500, 0.005, is_directed=true, seed=13)
+{500, 1286} directed simple Int64 graph
+
+julia> longest_path(g)
+Please ignore this output. At the moment it's necessary in order to suppress later output.
+---------------------
+Presolve 0 (-2) rows, 0 (-2) columns and 0 (-4) elements
+Optimal - objective value 1
+After Postsolve, objective 1, infeasibilities - dual 0 (0), primal 0 (0)
+Optimal objective 1 - 0 iterations time 0.002, Presolve 0.00
+Cbc0045I Solution with objective value -1 saved
+---------------------
+  1     1 [267 352] 0 0 Optimal 352.0 352.0
+  2     2 [267 352] 0 24 Optimal 352.0 352.0
+  3     2 [267 352] 0 112 Optimal 352.0 352.0
+  4     2 [338 352] 0 132 Optimal 352.0 352.0
+  5     2 [338 352] 0 146 Optimal 352.0 352.0
+  6     3 [352 352] 0 159 Optimal 352.0 352.0
+Longest path with bounds [352, 352] and a recorded path of length 352.
+```
+For large problems you most likely want to add some restriction on how
+long the search can go on. See the doc string.
 
 ## Theory
 
