@@ -226,7 +226,7 @@ function longest_path(graph;
 
         main_path, cycles, fragments = extract_paths(graph, edges,
                                                      reverse_edges,
-                                                     first_vertex, solution)
+                                                     first_vertex, solution.sol)
 
         lower_bound = max(lower_bound, length(main_path) - 1)
         if length(main_path) > length(best_path)
@@ -257,7 +257,7 @@ function longest_path(graph;
 
         if solution.attrs[:solver] == :lp
             append!(cycles, find_fractional_cutsets(graph, edges,
-                                                    reverse_edges, solution,
+                                                    reverse_edges, solution.sol,
                                                     fragments, first_vertex))
         end
 
@@ -455,7 +455,7 @@ function follow_path(graph, reverse_edges, w, v1)
 end
 
 function extract_paths(graph, edges, reverse_edges, first_vertex, solution)
-    w = solution.sol .>= 1
+    w = solution .>= 1
     n = sum(w)
     main_path, is_cycle = follow_path(graph, reverse_edges, w, first_vertex)
     n -= length(main_path) - 1
@@ -538,7 +538,7 @@ end
 function find_fractional_cutsets(graph, edges, reverse_edges, solution,
                                  fragments, first_vertex)
     # TODO: Check whether the copy ends up necessary.
-    w = copy(solution.sol)
+    w = copy(solution)
     candidate_cutsets = Cutset[]
     cutsets = Vector{Int}[]
     fractional_edges = 0 .< w
