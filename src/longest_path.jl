@@ -17,15 +17,21 @@ Type used for the return values of `longest_path`. See the function
 documentation for more information.
 """
 mutable struct LongestPath
+    is_cycle::Bool
     lower_bound::Int
     upper_bound::Int
     longest_path::Vector{Int}
     internals::Dict{String, Any}
 end
 
+# TODO: Handle empty paths nicely.
 function Base.show(io::IO, x::LongestPath)
-    println(io, "Longest path with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded path of length $(max(0, length(x.longest_path) - 1)).")
+    kind = x.is_cycle ? "cycle" : "path"
+    n = max(0, length(x.longest_path) - !x.is_cycle)
+    println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of length $(n).")
 end
+
+# General TODO: Check that self-loops are handled gracefully.
 
 """
     longest_path(graph)
@@ -46,11 +52,29 @@ By adding keyword arguments it is possible to obtain non-optimal
 solutions and bounds in shorter time than the full solution. It is
 also possible to modify the problem specification.
 
-* `first_vertex`: Start vertex for the path. Default is 1. **Not yet
-  implemented**.
+*Problem specifications:*
+
+* `first_vertex != 0` and `last_vertex == 0`: Search for a path from
+  `first_vertex` to anywhere.
+
+* `0 != first_vertex != last_vertex != 0`: Search for a path from
+  `first_vertex` to `last_vertex`.
+
+* `first_vertex == last_vertex != 0`: Search for a cycle going
+  through `first_vertex`.
+
+* `first_vertex == last_vertex = 0`: Search for a cycle anywhere.
+
+Note: Unless otherwise specified, both paths and cycles are called
+"paths" in the following and they are always assumed to be simple,
+i.e. no repeated vertices are allowed.
+
+*Keywords arguments:*
+
+* `first_vertex`: Start vertex for the path. Default is 1.
 
 * `last_vertex`: End vertex for the path. Default is 0, meaning
-  anywhere. **Not yet implemented**.
+  anywhere.
 
 * `initial_path`: Search can be warmstarted by providing a valid path
   as a vector of vertices. Default is an empty vector.
@@ -62,7 +86,7 @@ also possible to modify the problem specification.
   found during search.
 
 * `upper_bound`: User provided upper bound. Search will stop when the
-  lower bound reaches `upper_bound`, even if longer paths exist.
+  lower bound reaches `upper_bound`, even if a longer path exists.
   Default is the number of vertices in the graph. The provided
   `upper_bound` will be ignored if a stronger bound is found during
   search.
@@ -108,6 +132,10 @@ also possible to modify the problem specification.
   bounds. Default is 0. Higher values can speed up the early
   iterations in `"ip"` mode.
 
+* `use_ip_warmstart`: Use warmstart when solving integer programs.
+  Normally this speeds up the solution substantially but it also
+  causes the Cbc solver to emit trace outputs. Default is true.
+
 * `log_level`: Amount of verbosity during search. 0 is maximally
   quiet. The default value 1 only prints progress for each iteration.
   Higher values add diagnostics from the IP solver calls.
@@ -128,6 +156,8 @@ also possible to modify the problem specification.
 The return value is of the `LongestPath` type and contains the
 following fields:
 
+* `is_cycle`: Whether the search produced a cycle or a path.
+
 * `lower_bound`: Lower bound for the length of the longest path.
 
 * `upper_bound`: Upper bound for the length of the longest path.
@@ -136,7 +166,19 @@ following fields:
 
 * `internals`: Dict containing a variety of information about the search.
 
-Note: path lengths are reported by number of edges, not number of vertices.
+Notes:
+
+* Path lengths are reported by number of edges, not number of
+  vertices. For cycles these are the same, for paths the number of
+  edges is one less than the number of vertices.
+
+* If there is no outgoing edge from `first_vertex` in a path search
+  going anywhere, the length is reported as 0 and the returned
+  `longest_path` contains the single vertex `first_vertex`.
+
+* In other searches, if there exists no path or cycle matching the
+  specifications, the length is reported as -1 and the returned
+  `longest_path` is empty.
 """
 function longest_path(graph;
                       first_vertex = 1,
@@ -151,6 +193,7 @@ function longest_path(graph;
                       time_limit = typemax(Int),
                       solver_time_limit = 10,
                       max_gap = 0,
+                      use_ip_warmstart = true,
                       log_level = 1,
                       new_longest_path_callback = x -> nothing,
                       iteration_callback = print_iteration_data)
@@ -163,21 +206,54 @@ function longest_path(graph;
         error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation.")
     end
 
-    if first_vertex != 1 || last_vertex != 0
-        error("At the moment paths have to start at vertex 1 and be open-ended.")
+    # TODO: Do the reversal ourselves and perform the search?
+    if first_vertex == 0 && last_vertex != 0
+        error("Search from anywhere to a specified vertex is not supported. Reverse the graph and search in the opposite direction instead.")
+    end
+
+    # TODO: Check that the provided `initial_path` really is a simple
+    # path or cycle at all.
+
+    if first_vertex != last_vertex != 0
+        path = get_path(graph, first_vertex, last_vertex)
+        if isempty(path)
+            return LongestPath(false, -1, -1, Int[], Dict())
+        elseif length(path) > length(initial_path)
+            new_longest_path_callback(path)
+            # Replacing `initial_path` is sort of misleading but the
+            # most convenient way to get it into `best_path` later.
+            initial_path = path
+        end
     end
 
     # TODO: Check why this really is necessary.
-    if isempty(outneighbors(graph, first_vertex))
-        return LongestPath(0, 0, [1], Dict())
+    if last_vertex != first_vertex != 0 && isempty(outneighbors(graph, first_vertex))
+        return LongestPath(false, 0, 0, [first_vertex], Dict())
     end
-                
+
+    if first_vertex == last_vertex
+        if first_vertex == 0
+            cycle = get_cycle(graph)
+        else
+            cycle = get_cycle(graph, first_vertex)
+        end
+
+        if isempty(cycle)
+            return LongestPath(true, -1, -1, Int[], Dict())
+        elseif length(cycle) > length(initial_path)
+            new_longest_path_callback(cycle)
+            # Replacing `initial_path` is sort of misleading but the
+            # most convenient way to get it into `best_path` later.
+            initial_path = cycle
+        end
+    end
+
     # Terribly ugly but these lines forces a trace message from
     # `setwarmstart!`, after which all following ones can be suppressed.
     # Without these three lines, output from `setwarmstart!` is only
     # momentarily suppressed but comes back slightly delayed.
     # See https://github.com/JuliaOpt/Cbc.jl/issues/78.
-    if log_level < 2 && solver_mode != "lp"
+    if log_level < 2 && solver_mode != "lp" && use_ip_warmstart
         println("Please ignore this output. At the moment it's necessary in order to suppress later output.")
         println("---------------------")
         model = LinearQuadraticModel(CbcSolver(logLevel=0))
@@ -186,19 +262,28 @@ function longest_path(graph;
         println("---------------------")
     end
 
-    O = OptProblem(graph, first_vertex, last_vertex)
-    edges = get_all_edges(graph)
+    O, edges = OptProblem(graph, first_vertex, last_vertex)
     reverse_edges = Dict(edges[k] => k for k = 1:length(edges))
+
+    best_path = initial_path
+    if first_vertex == last_vertex
+        lower_bound = max(lower_bound, length(best_path))
+    else
+        lower_bound = max(lower_bound, length(best_path) - 1)
+    end
 
     if initial_cycle_constraints > 1
         cycles = simplecycles_limited_length(graph, initial_cycle_constraints)
-        constrain_cycles!(O, cycles, edges, nothing, cycle_constraint_mode)
+        if first_vertex == last_vertex == 0
+            best_path = filter_out_longest_cycle!(best_path, cycles,
+                                                  new_longest_path_callback)
+        end
+        constrain_cycles!(O, cycles, edges, cycle_constraint_mode, first_vertex)
     end
 
     solution = nothing
     
     start_time = time()
-    best_path = initial_path
     main_path = Int[]
     cycles = Vector{Int}[]
     
@@ -216,9 +301,10 @@ function longest_path(graph;
             solution = solve_LP(O)
             objbound = solution.objval
         else
-            solution = solve_IP(O, path_edges, seconds = solver_time,
-                                 allowableGap = max_gap,
-                                 logLevel = max(0, log_level - 1))
+            solution = solve_IP(O, path_edges, use_ip_warmstart,
+                                seconds = solver_time,
+                                allowableGap = max_gap,
+                                logLevel = max(0, log_level - 1))
             objbound = solution.attrs[:objbound]
         end
 
@@ -226,7 +312,16 @@ function longest_path(graph;
 
         main_path, cycles, fragments = extract_paths(graph, edges,
                                                      reverse_edges,
-                                                     first_vertex, solution.sol)
+                                                     first_vertex, last_vertex,
+                                                     solution.sol)
+
+        if first_vertex == last_vertex
+            if first_vertex == 0
+                best_path = filter_out_longest_cycle!(best_path, cycles,
+                                                      new_longest_path_callback)
+            end
+            lower_bound = max(lower_bound, length(best_path))
+        end
 
         lower_bound = max(lower_bound, length(main_path) - 1)
         if length(main_path) > length(best_path)
@@ -247,6 +342,7 @@ function longest_path(graph;
                           best_path = best_path,
                           main_path = main_path,
                           cycles = cycles)
+
         if !iteration_callback(iteration_data)
             break
         end
@@ -256,9 +352,24 @@ function longest_path(graph;
         end
 
         if solution.attrs[:solver] == :lp
-            append!(cycles, find_fractional_cutsets(graph, edges,
-                                                    reverse_edges, solution.sol,
-                                                    fragments, first_vertex))
+            cutsets = find_fractional_cutsets(graph, edges, reverse_edges,
+                                              solution.sol, fragments,
+                                              first_vertex)
+            # When searching for longest cycle anywhere, we have to be
+            # sure that no cutset will eliminate the optimal solution.
+            # This is safe but quite conservative.
+            #
+            # TODO: Relax this test to allow more valid cutsets.
+            #
+            # Note: We don't need to do this when searching for a
+            # cycle through a specified vertex since
+            # `constrain_cycles!` will filter out cycles through that
+            # vertex.
+            if first_vertex == last_vertex == 0
+                cutsets = filter(x -> length(x) < length(best_path), cutsets)
+            end
+
+            append!(cycles, cutsets)
         end
 
         # If no cycles or cutsets have been found there are no new
@@ -280,11 +391,11 @@ function longest_path(graph;
         end
 
         selected_cycles = select_cycles(cycles)
-        constrain_cycles!(O, selected_cycles, edges, solution.sol,
-                          cycle_constraint_mode)
+        constrain_cycles!(O, selected_cycles, edges,
+                          cycle_constraint_mode, first_vertex)
     end
 
-    return LongestPath(lower_bound, upper_bound,
+    return LongestPath(first_vertex == last_vertex, lower_bound, upper_bound,
                        best_path,
                        Dict("O" => O, "edges" => edges,
                             "last_path" => main_path, "last_cycles" => cycles,
@@ -343,40 +454,96 @@ function OptProblem(graph,
     l = zeros(Int, M)
     u = ones(Int, M)
     vartypes = fill(:Bin, M)
-    # TODO:
-    # * Support different options for start and end vertices.
-    #
+    edge_variables = Tuple{Int, Int}[]
     # There are two constraints per vertex, numbered 2n-1 and 2n,
-    # where n is the number of the vertex. The odd-numbered
-    # constraints sums the values of the incoming edges to the vertex,
-    # which must be between 0 and 1, except for the first vertex where
-    # the sum must be 0. The even-numbered constraints sums the values
-    # of the outgoing edges and subtracts the values of the incoming
-    # edges. This must be between -1 and 0 for all vertices except the
-    # first, which must be between 0 and 1.
+    # where n is the number of the vertex.
+    #
+    # The odd-numbered constraints sums the values of the incoming
+    # edges to the vertex. The even-numbered constraints sums the
+    # values of the outgoing edges and subtracts the values of the
+    # incoming edges.
+    #
+    # The bounds on these constraints depend on the type of search as
+    # specified in the tables below.
+    #
+    # 1. Search from a specified start point to a specified end point,
+    #    i.e. 0 != first_vertex != last_vertex != 0.
+    #
+    #       first vertex  last vertex  other vertices
+    # odd   0              1           [0, 1]
+    # even  1             -1            0
+    #
+    # 2. Search for a cycle through a specified vertex,
+    #    i.e. first_vertex == last_vertex != 0.
+    #
+    #       first vertex  last vertex  other vertices
+    # odd   1             N/A          [0, 1]
+    # even  0             N/A           0
+    #
+    # 3. Search from a specified start point to an arbitrary end point,
+    #    i.e. first_vertex != 0 and last_vertex == 0.
+    #
+    #       first vertex  last vertex  other vertices
+    # odd    0            N/A          [ 0, 1]
+    # even  [0, 1]        N/A          [-1, 0]
+    #
+    # 4. Search for a cycle anywhere,
+    #    i.e. first_vertex == last_vertex == 0.
+    #
+    #       first vertex  last vertex  other vertices
+    # odd   N/A           N/A          [0, 1]
+    # even  N/A           N/A           0
+
     m = 0
     for n = 1:N
-        lb[2 * n - 1] = 0
-        ub[2 * n - 1] = Int(n > 1)
-        lb[2 * n] = -1
+        # Set up the coefficients of the constraints. This relies on
+        # the ordering of edge variables matching the iteration over
+        # vertices and outneighbors.
         for k in outneighbors(graph, n)
+            push!(edge_variables, (n, k))
             m += 1
-            A[2 * n, m] = 1
-            A[2 * k, m] = -1
-            A[2 * k - 1, m] = 1
+            A[2 * k - 1, m] = 1  # Incoming edge to vertex k.
+            A[2 * n, m] = 1      # Outgoing edge from vertex n.
+            A[2 * k, m] = -1     # Incoming edge to vertex k.
         end
+        # Set Constraint bounds for "other vertices". Bounds for the
+        # first and last vertices will be corrected after the loop.
+        # Note: bounds are already initialized to 0, so we could skip
+        # filling in zero values again but this is not time critical,
+        # so let's be clear and explicit.
+        lb[2 * n - 1] = 0
+        ub[2 * n - 1] = 1
+        if first_vertex != 0 && last_vertex == 0
+            lb[2 * n] = -1
+        else
+            lb[2 * n] = 0
+        end
+        ub[2 * n] = 0
     end
-    lb[2] = 0
-    ub[2] = 1
     @assert m == M
 
-    return OptProblem(A, c, lb, ub, l, u, vartypes, CycleConstraint[])
-end
+    # Fill in bounds for first and last vertices, if specified.
+    if first_vertex != 0
+        if last_vertex == first_vertex
+            lb[2 * first_vertex - 1] = 1
+        else
+            lb[2 * first_vertex - 1] = 0
+            ub[2 * first_vertex - 1] = 0
+            ub[2 * first_vertex] = 1
+            if last_vertex != 0
+                lb[2 * first_vertex] = 1
+                lb[2 * last_vertex - 1] = 1
+                ub[2 * last_vertex - 1] = 1
+                lb[2 * last_vertex] = -1
+                ub[2 * last_vertex] = -1
+            else
+                lb[2 * first_vertex] = 0
+            end
+        end
+    end
 
-# TODO: Use Edge objects downstream.
-# Investigate whether just returning the iterator is fine.
-function get_all_edges(graph)
-    return map(e -> (src(e), dst(e)), edges(graph))
+    return (OptProblem(A, c, lb, ub, l, u, vartypes, CycleConstraint[]),
+            edge_variables)
 end
 
 function solve_LP(O::OptProblem; kw...)
@@ -391,13 +558,14 @@ function solve_LP(O::OptProblem; kw...)
     solution = MathProgBase.HighLevelInterface.LinprogSolution(status(model), getobjval(model), getsolution(model), attrs)
 end
 
-function solve_IP(O::OptProblem, initial_solution = Int[]; kw...)
+function solve_IP(O::OptProblem, initial_solution = Int[],
+                  use_warmstart = true; kw...)
     model = LinearQuadraticModel(CbcSolver(;kw...))
     A, lb, ub = add_cycle_constraints_to_formulation(O)
     loadproblem!(model, A, O.l, O.u, O.c, lb, ub, :Max)
     setvartype!(model, O.vartypes)
     original_stdout = stdout
-    if !isempty(initial_solution)
+    if !isempty(initial_solution) && use_warmstart
         if values(kw).logLevel < 1
             @suppress setwarmstart!(model, initial_solution)
         else
@@ -410,6 +578,7 @@ function solve_IP(O::OptProblem, initial_solution = Int[]; kw...)
     attrs[:objbound] = getobjbound(model)
     attrs[:solver] = :ip
     solution = MathProgBase.HighLevelInterface.MixintprogSolution(status(model), getobjval(model), getsolution(model), attrs)
+    return solution
 end
 
 function add_cycle_constraints_to_formulation(O::OptProblem)
@@ -431,6 +600,9 @@ function add_cycle_constraints_to_formulation(O::OptProblem)
 end
 
 function follow_path(graph, reverse_edges, w, v1)
+    if v1 == 0
+        return Int[], false
+    end
     path = [v1]
     while true
         v = path[end]
@@ -454,13 +626,24 @@ function follow_path(graph, reverse_edges, w, v1)
     return path, false
 end
 
-function extract_paths(graph, edges, reverse_edges, first_vertex, solution)
+# TODO: Check if something needs to be done in the last_vertex != 0 case.
+function extract_paths(graph, edges, reverse_edges, first_vertex, last_vertex,
+                       solution)
     w = solution .>= 1
     n = sum(w)
-    main_path, is_cycle = follow_path(graph, reverse_edges, w, first_vertex)
-    n -= length(main_path) - 1
     cycles = Vector{Int}[]
     other_paths = Vector{Int}[]
+    main_path, is_cycle = follow_path(graph, reverse_edges, w, first_vertex)
+    if !is_cycle && last_vertex != 0 && main_path[end] != last_vertex
+        # This should never happen for an integer solution but could
+        # happen, and is rather likely to, for a fractional solution.
+        push!(other_paths, main_path)
+        n -= length(main_path) - 1
+        main_path = Int[]
+    end
+    if !isempty(main_path)
+        n -= length(main_path) - !is_cycle
+    end
     while n > 0
         if sum(w) != n
             @assert sum(w) == n
@@ -535,6 +718,8 @@ function add_vertex_to_cutset(graph, reverse_edges, cutset::Cutset, vertex, w)
     return Cutset(graph, reverse_edges, vcat(cutset.vertices, vertex), w)
 end
 
+# TODO: Maybe skip first_vertex checks and leave it to
+# constrain_cycles to filter out bad cutsets.
 function find_fractional_cutsets(graph, edges, reverse_edges, solution,
                                  fragments, first_vertex)
     # TODO: Check whether the copy ends up necessary.
@@ -608,6 +793,42 @@ function cycle_constraints_margin(cutset::Cutset)
     return margin
 end
 
+# When searching for longest cycle, a new best cycle may have appeared
+# among the detected cycles that we are otherwise going to eliminate
+# with additional constraints. In that case, update the best cycle and
+# remove it from cycles to be eliminated.
+#
+# It could also happen that the current best cycle is among the cycles
+# to be eliminated. We could try to detect whether this is the case
+# and filter it out, but a simpler solution is to just switch to a new
+# cycle of the same length as the previous best and filter that one
+# out, which is trivial.
+function filter_out_longest_cycle!(best_path, cycles, new_longest_path_callback)
+    if isempty(cycles)
+        return best_path
+    end
+
+    cycle_lengths = length.(cycles)
+    longest_cycle = maximum(cycle_lengths)
+
+    # Current best cycle is longer than all cycles to be eliminated.
+    # Nothing needs to be done.
+    if longest_cycle < length(best_path)
+        return best_path
+    end
+
+    # Find one of the longest cycles in cycles.
+    i = findlast(cycle_lengths .== longest_cycle)
+    cycle = cycles[i]
+    cycles = deleteat!(cycles, i)
+
+    # Replace the current best cycle with the new cycle (by returning it).
+    if length(cycle) > length(best_path)
+        new_longest_path_callback(best_path)
+    end
+    return cycle
+end
+
 
 function select_cycles(cycles)
     cutoff_length = max(minimum(length.(cycles)), 12)
@@ -616,7 +837,7 @@ end
 
 # Add constraints derived from cycles in the graph. (Technically it
 # doesn't have to be cycles, any arbitrary set of vertices not
-# including the starting vertex is fine.)
+# including the first vertex is fine.)
 #
 # There are two kinds of constraints, internal and external.
 #
@@ -638,9 +859,13 @@ end
 #
 # Return the number of added constraints.
 function constrain_cycles!(O::OptProblem, cycles, edges,
-                           solution, cycle_constraint_mode)
+                           cycle_constraint_mode, first_vertex)
     previous_number_of_constraints = length(O.cycle_constraints)
     for cycle in cycles
+        if first_vertex ∈ cycle
+            continue
+        end
+
         if cycle_constraint_mode == "cycle" || cycle_constraint_mode == "both"
             A = spzeros(Int, size(O.A, 2))
             for i = 1:length(edges)
@@ -653,6 +878,7 @@ function constrain_cycles!(O::OptProblem, cycles, edges,
             ub = length(cycle) - 1
             push!(O.cycle_constraints, CycleConstraint(A, lb, ub))
         end
+
         if cycle_constraint_mode == "cutset" || cycle_constraint_mode == "both"
             # Find all incoming edges to the cycle.
             incoming_edges_to_cycle = findall([edge[1] ∉ cycle && edge[2] ∈ cycle for edge in edges])
@@ -675,4 +901,58 @@ function constrain_cycles!(O::OptProblem, cycles, edges,
     end
 
     return length(O.cycle_constraints) - previous_number_of_constraints
+end
+
+# Borrowed from https://github.com/JuliaGraphs/LightGraphs.jl/pull/1095
+# until is has been merged and released.
+function get_cycle(g::AbstractGraph)
+    return get_path_or_cycle(g, vertices(g), 0, true, false)
+end
+
+function get_cycle(g::AbstractGraph, v)
+    return get_path_or_cycle(g, v, v, true, false)
+end
+
+function get_path(g::AbstractGraph, v::Integer, w::Integer)
+    return get_path_or_cycle(g, v, w, false, false)
+end
+
+function get_path_or_cycle(g::AbstractGraph{T}, sources, target, find_cycle,
+                           only_detect_cycle) where T
+    vcolor = zeros(UInt8, nv(g))
+    path = Vector{T}()
+    for source in sources
+        vcolor[source] != 0 && continue
+        push!(path, source)
+        vcolor[source] = 1
+        while !isempty(path)
+            u = path[end]
+            w = T(0)
+            for n in outneighbors(g, u)
+                if vcolor[n] == 0
+                    w = n
+                    break
+                elseif vcolor[n] == 1 && find_cycle && (target == 0 || target == n)
+                    if !only_detect_cycle
+                        while path[1] != n
+                            popfirst!(path)
+                        end
+                    end
+                    return path
+                end
+            end
+            if w != 0
+                push!(path, w)
+                if w == target
+                    return path
+                end
+                vcolor[w] = 1
+            else
+                vcolor[u] = 2
+                pop!(path)
+            end
+        end
+    end
+
+    return path
 end
