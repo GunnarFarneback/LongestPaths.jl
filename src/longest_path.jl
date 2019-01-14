@@ -1,4 +1,4 @@
-export LongestPath, longest_path
+export LongestPathOrCycle, find_longest_path, find_longest_cycle
 
 using MathProgBase
 using MathProgBase.SolverInterface
@@ -11,12 +11,12 @@ using Random
 using Suppressor
 
 """
-    LongestPath
+    LongestPathOrCycle
 
 Type used for the return values of `longest_path`. See the function
 documentation for more information.
 """
-mutable struct LongestPath
+mutable struct LongestPathOrCycle
     is_cycle::Bool
     lower_bound::Int
     upper_bound::Int
@@ -25,7 +25,7 @@ mutable struct LongestPath
 end
 
 # TODO: Handle empty paths nicely.
-function Base.show(io::IO, x::LongestPath)
+function Base.show(io::IO, x::LongestPathOrCycle)
     kind = x.is_cycle ? "cycle" : "path"
     n = max(0, length(x.longest_path) - !x.is_cycle)
     println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of length $(n).")
@@ -33,48 +33,42 @@ end
 
 # General TODO: Check that self-loops are handled gracefully.
 
-"""
-    longest_path(graph)
+main_docstring = """
+    find_longest_path(graph, first_vertex = 1, last_vertex = 0)
 
-Find the longest simple path in `graph` starting from vertex number
-one and ending anywhere. No vertex may be visited more than once.
-Given sufficient time and memory, this will succeed in finding the
-longest path, but since finding the longest path is an NP-hard
-problem, the required time will grow quickly with the graph size.
+Find the longest simple path in `graph` starting from `first_vertex`
+and ending in `last_vertex`. No vertex may be visited more than once.
+If `last_vertex` is 0, the path may end anywhere. `first_vertex`
+cannot be 0.
+
+    find_longest_cycle(graph, first_vertex = 0)
+
+Find the longest simple cycle in `graph` that includes `first_vertex`.
+No vertex may be visited more than once. If `first_vertex` is 0, the
+cycle can be anywhere.
+
+Given sufficient time and memory, these will succeed in finding the
+longest path or cycle, but since finding the longest path/cycle is an
+NP-hard problem, the required time will grow quickly with the graph
+size.
 
 For the time being, `graph` must be a **directed** graph from the
-`LightGraphs` package. The algorithm works for undirected graphs as
-well, but you must first represent it as a directed graph.
+`LightGraphs` package. The algorithm works for undirected graphs if
+they are represented as directed graphs with pairs of edges in both
+directions.
 
-    longest_path(graph; kwargs)
+    find_longest_path(...; kwargs)
+    find_longest_cycle(...; kwargs)
 
-By adding keyword arguments it is possible to obtain non-optimal
-solutions and bounds in shorter time than the full solution. It is
-also possible to modify the problem specification.
-
-*Problem specifications:*
-
-* `first_vertex != 0` and `last_vertex == 0`: Search for a path from
-  `first_vertex` to anywhere.
-
-* `0 != first_vertex != last_vertex != 0`: Search for a path from
-  `first_vertex` to `last_vertex`.
-
-* `first_vertex == last_vertex != 0`: Search for a cycle going
-  through `first_vertex`.
-
-* `first_vertex == last_vertex = 0`: Search for a cycle anywhere.
+By adding keyword arguments it is possible to guide the search or
+obtain non-optimal solutions and upper bounds in shorter time than the
+full solution.
 
 Note: Unless otherwise specified, both paths and cycles are called
 "paths" in the following and they are always assumed to be simple,
 i.e. no repeated vertices are allowed.
 
 *Keywords arguments:*
-
-* `first_vertex`: Start vertex for the path. Default is 1.
-
-* `last_vertex`: End vertex for the path. Default is 0, meaning
-  anywhere.
 
 * `initial_path`: Search can be warmstarted by providing a valid path
   as a vector of vertices. Default is an empty vector.
@@ -153,7 +147,7 @@ i.e. no repeated vertices are allowed.
   specifications. Return `true` to continue search and `false` to stop
   search. The default is the `print_iteration_data` function.
 
-The return value is of the `LongestPath` type and contains the
+The return value is of the `LongestPathOrCycle` type and contains the
 following fields:
 
 * `is_cycle`: Whether the search produced a cycle or a path.
@@ -174,41 +168,77 @@ Notes:
 
 * If there is no outgoing edge from `first_vertex` in a path search
   going anywhere, the length is reported as 0 and the returned
-  `longest_path` contains the single vertex `first_vertex`.
+  `longest_path` contains the single vertex `first_vertex`. This is
+  also the case if `first_vertex == last_vertex`.
 
 * In other searches, if there exists no path or cycle matching the
   specifications, the length is reported as -1 and the returned
   `longest_path` is empty.
 """
-function longest_path(graph;
-                      first_vertex = 1,
-                      last_vertex = 0,
-                      initial_path = Int[],
-                      lower_bound = length(initial_path) - 1,
-                      upper_bound = nv(graph),
-                      solver_mode = "ip",
-                      cycle_constraint_mode = "cutset",
-                      initial_cycle_constraints = 0,
-                      max_iterations = typemax(Int),
-                      time_limit = typemax(Int),
-                      solver_time_limit = 10,
-                      max_gap = 0,
-                      use_ip_warmstart = true,
-                      log_level = 1,
-                      new_longest_path_callback = x -> nothing,
-                      iteration_callback = print_iteration_data)
+
+"$(main_docstring)"
+function find_longest_path(graph, first_vertex::Integer = 1,
+                           last_vertex::Integer = 0; kwargs...)
+    # TODO: Do the reversal ourselves and perform the search?
+    if first_vertex == 0 && last_vertex != 0
+        error("Search from anywhere to a specified vertex is not supported. Reverse the graph and search in the opposite direction instead.")
+    end
+
+    if first_vertex == last_vertex == 0
+        error("Search cannot be done for a path starting and ending anywhere.")
+    end
+
+    if first_vertex == last_vertex != 0
+        return LongestPathOrCycle(false, 0, 0, [first_vertex], Dict())
+    end
+
+    # TODO: Check why this really is necessary. (I.e. why the main
+    # function doesn't handle this case correctly.)
+    if last_vertex == 0 && isempty(outneighbors(graph, first_vertex))
+        return LongestPathOrCycle(false, 0, 0, [first_vertex], Dict())
+    end
+
+    return _find_longest_path(graph, first_vertex, last_vertex; kwargs...)
+end
+
+"$(main_docstring)"
+function find_longest_cycle(graph, first_vertex = 1; kwargs...)
+    return _find_longest_path(graph, first_vertex, first_vertex; kwargs...)
+end
+
+# The main search function for both paths and cycles. At this point
+# cycle search is indicated by `first_vertex == last_vertex`.
+function _find_longest_path(graph, first_vertex, last_vertex;
+                            initial_path = Int[],
+                            lower_bound = length(initial_path) - 1,
+                            upper_bound = nv(graph),
+                            solver_mode = "ip",
+                            cycle_constraint_mode = "cutset",
+                            initial_cycle_constraints = 0,
+                            max_iterations = typemax(Int),
+                            time_limit = typemax(Int),
+                            solver_time_limit = 10,
+                            max_gap = 0,
+                            use_ip_warmstart = true,
+                            log_level = 1,
+                            new_longest_path_callback = x -> nothing,
+                            iteration_callback = print_iteration_data)
+    if !is_directed(graph)
+        error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation.")
+    end
+
+    # TODO: Convert these to proper validation of user input.
     @assert(solver_mode ∈ ["lp", "lp+ip", "ip"],
             "solver_mode must be one of \"lp\", \"lp+ip\", \"ip\"")
     @assert(cycle_constraint_mode ∈ ["cycle", "cutset", "both"], 
             "cycle_constraint_mode must be one of \"cycle\", \"cutset\", \"both\"")
 
-    if !is_directed(graph)
-        error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation.")
+    if !(0 <= first_vertex <= nv(graph))
+        error("The first vertex is outside the vertex range of the graph.")
     end
 
-    # TODO: Do the reversal ourselves and perform the search?
-    if first_vertex == 0 && last_vertex != 0
-        error("Search from anywhere to a specified vertex is not supported. Reverse the graph and search in the opposite direction instead.")
+    if !(0 <= last_vertex <= nv(graph))
+        error("The last vertex is outside the vertex range of the graph.")
     end
 
     # TODO: Check that the provided `initial_path` really is a simple
@@ -217,18 +247,13 @@ function longest_path(graph;
     if first_vertex != last_vertex != 0
         path = get_path(graph, first_vertex, last_vertex)
         if isempty(path)
-            return LongestPath(false, -1, -1, Int[], Dict())
+            return LongestPathOrCycle(false, -1, -1, Int[], Dict())
         elseif length(path) > length(initial_path)
             new_longest_path_callback(path)
             # Replacing `initial_path` is sort of misleading but the
             # most convenient way to get it into `best_path` later.
             initial_path = path
         end
-    end
-
-    # TODO: Check why this really is necessary.
-    if last_vertex != first_vertex != 0 && isempty(outneighbors(graph, first_vertex))
-        return LongestPath(false, 0, 0, [first_vertex], Dict())
     end
 
     if first_vertex == last_vertex
@@ -239,7 +264,7 @@ function longest_path(graph;
         end
 
         if isempty(cycle)
-            return LongestPath(true, -1, -1, Int[], Dict())
+            return LongestPathOrCycle(true, -1, -1, Int[], Dict())
         elseif length(cycle) > length(initial_path)
             new_longest_path_callback(cycle)
             # Replacing `initial_path` is sort of misleading but the
@@ -395,11 +420,13 @@ function longest_path(graph;
                           cycle_constraint_mode, first_vertex)
     end
 
-    return LongestPath(first_vertex == last_vertex, lower_bound, upper_bound,
-                       best_path,
-                       Dict("O" => O, "edges" => edges,
-                            "last_path" => main_path, "last_cycles" => cycles,
-                            "last_solution" => solution))
+    return LongestPathOrCycle(first_vertex == last_vertex,
+                              lower_bound, upper_bound,
+                              best_path,
+                              Dict("O" => O, "edges" => edges,
+                                   "last_path" => main_path,
+                                   "last_cycles" => cycles,
+                                   "last_solution" => solution))
 end
 
 function print_iteration_data(data)

@@ -1,25 +1,37 @@
 # LongestPaths.jl
 
-LongestPaths is a Julia package dedicated to finding long simple
-paths, i.e. no repeated vertex, in a graph, as well as upper bounds on
-the maximum length.
+LongestPaths is a Julia package dedicated to finding long simple paths
+or cycles, i.e. no repeated vertex, in a graph, as well as upper
+bounds on the maximum length.
 
 The longest path problem is NP-hard, so the time needed to find the
 solution grows quickly with the size of the graph, unless it has some
 advantageous structure.
 
-At this time only one function is provided:
+At this time two functions are provided:
 
-    longest_path(graph; kwargs)
+    find_longest_path(graph, first_vertex = 1, last_vertex = 0; kwargs)
 
 Find the longest simple path in a directed LightGraphs graph, starting
-with vertex one and ending anywhere. If time limits or other
-restrictions prevent finding an optimal path, an upper bound on the
-maximum length is returned together with the longest path found.
+with `first_vertex` and ending in `last_vertex`. If `last_vertex` is 0
+the path may end anywhere. If time limits or other restrictions
+prevent finding an optimal path, an upper bound on the maximum length
+is returned together with the longest path found.
+
+    find_longest_cycle(graph, first_vertex = 0; kwargs)
+
+Find the longest simple cycle in a directed LightGraphs graph, which
+includes `first_vertex`. If `first_vertex` is 0 the cycle may be
+anywhere. If time limits or other restrictions prevent finding an
+optimal path, an upper bound on the maximum length is returned
+together with the longest cycle found.
 
 ## Adding LongestPaths
 
-In Julia pkg mode (press `]`):
+LongestPaths is not a registered Julia package but can be installed
+directly from the GitHub repository.
+
+In Julia `pkg` mode (press `]`):
 ```
 pkg> add https://github.com/GunnarFarneback/LongestPaths.jl.git
 ```
@@ -31,7 +43,7 @@ julia> using LongestPaths, LightGraphs
 julia> g = erdos_renyi(500, 0.005, is_directed=true, seed=13)
 {500, 1286} directed simple Int64 graph
 
-julia> longest_path(g)
+julia> find_longest_path(g)
 Please ignore this output. At the moment it's necessary in order to suppress later output.
 ---------------------
 Presolve 0 (-2) rows, 0 (-2) columns and 0 (-4) elements
@@ -81,6 +93,10 @@ variables:
 * The sum of outgoing edges from a vertex minus the sum of the
   incoming edges is between -1 and 0 for all other vertices
 
+(These constraints are for searching for a path starting in a
+specified vertex and ending anywhere. The other search variants have
+slightly different constraints, documented in the source code.)
+
 The objective function is the sum of all edge variables, which is
 maximized.
 
@@ -111,9 +127,6 @@ cycles, in particular since they have a greater effect on the LP
 relaxation. That is also the default in the `longest_path` function.
 
 ## Future Plans
-
-* Generalize to a user selected starting vertex, a fixed ending
-  vertex, and to finding longest cycles. This is all straightforward.
 
 * Generalize to weighted longest paths. This is mostly
   straightforward.
