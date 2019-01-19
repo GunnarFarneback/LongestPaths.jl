@@ -335,10 +335,10 @@ function _find_longest_path(graph, first_vertex, last_vertex;
 
         upper_bound = min(upper_bound, floor(Int, round(objbound, digits = 3)))
 
-        main_path, cycles, fragments = extract_paths(graph, edges,
-                                                     reverse_edges,
-                                                     first_vertex, last_vertex,
-                                                     solution.sol)
+        main_path, cycles = extract_paths(graph, edges,
+                                          reverse_edges,
+                                          first_vertex, last_vertex,
+                                          solution.sol)
 
         if first_vertex == last_vertex
             if first_vertex == 0
@@ -378,8 +378,7 @@ function _find_longest_path(graph, first_vertex, last_vertex;
 
         if solution.attrs[:solver] == :lp
             cutsets = find_fractional_cutsets(graph, edges, reverse_edges,
-                                              solution.sol, fragments,
-                                              first_vertex)
+                                              solution.sol)
             # When searching for longest cycle anywhere, we have to be
             # sure that no cutset will eliminate the optimal solution.
             # This is safe but quite conservative.
@@ -656,15 +655,13 @@ end
 # TODO: Check if something needs to be done in the last_vertex != 0 case.
 function extract_paths(graph, edges, reverse_edges, first_vertex, last_vertex,
                        solution)
-    w = solution .>= 1
+    w = solution .>= 0.51
     n = sum(w)
     cycles = Vector{Int}[]
-    other_paths = Vector{Int}[]
     main_path, is_cycle = follow_path(graph, reverse_edges, w, first_vertex)
     if !is_cycle && last_vertex != 0 && main_path[end] != last_vertex
         # This should never happen for an integer solution but could
         # happen, and is rather likely to, for a fractional solution.
-        push!(other_paths, main_path)
         n -= length(main_path) - 1
         main_path = Int[]
     end
@@ -679,143 +676,56 @@ function extract_paths(graph, edges, reverse_edges, first_vertex, last_vertex,
                                      edges[findfirst(w)][1])
         if is_cycle
             push!(cycles, path)
-        else
-            push!(other_paths, path)
         end
         n -= length(path) - !is_cycle
     end
 
-    return main_path, cycles, other_paths
+    return main_path, cycles
 end
 
-mutable struct Cutset
-    vertices::Vector{Int}
-    total_internal_flow::Float64
-    total_external_inflow::Float64
-    max_internal_inflow::Float64
-end
-
-function Cutset(graph, reverse_edges, vertices::Vector{Int}, w)
-    cutset = Cutset(sort(vertices), 0.0, 0.0, 0.0)
-    for v in vertices
-        internal_inflow = 0.0
-        for n in inneighbors(graph, v)
-            e = reverse_edges[(n, v)]
-            if w[e] > 0
-                if n ∈ vertices
-                    cutset.total_internal_flow += w[e]
-                    internal_inflow += w[e]
-                else
-                    cutset.total_external_inflow += w[e]
-                end
-            end
-        end
-        if internal_inflow > cutset.max_internal_inflow
-            cutset.max_internal_inflow = internal_inflow
-        end
-    end
-    return cutset
-end
-
-function inflow_change(graph, reverse_edges, cutset::Cutset, vertex, w)
-    Δ = 0.0
-    for n in outneighbors(graph, vertex)
-        e = reverse_edges[(vertex, n)]
-        if w[e] > 0
-            if n ∈ cutset.vertices
-                Δ -= w[e]
-            end
+function find_fractional_cutsets(graph, edges, reverse_edges, solution)
+    graph2 = SimpleDiGraph(nv(graph))
+    for i = 1:length(solution)
+        if 0.01 < solution[i] < 0.99
+            add_edge!(graph2, edges[i]...)
         end
     end
 
-    for n in inneighbors(graph, vertex)
-        e = reverse_edges[(n, vertex)]
-        if w[e] > 0
-            if n ∉ cutset.vertices
-                Δ += w[e]
-            end
-        end
-    end
-
-    return Δ
-end
-
-# TODO: Implement incremental update.
-function add_vertex_to_cutset(graph, reverse_edges, cutset::Cutset, vertex, w)
-    return Cutset(graph, reverse_edges, vcat(cutset.vertices, vertex), w)
-end
-
-# TODO: Maybe skip first_vertex checks and leave it to
-# constrain_cycles to filter out bad cutsets.
-function find_fractional_cutsets(graph, edges, reverse_edges, solution,
-                                 fragments, first_vertex)
-    # TODO: Check whether the copy ends up necessary.
-    w = copy(solution)
-    candidate_cutsets = Cutset[]
     cutsets = Vector{Int}[]
-    fractional_edges = 0 .< w
-    for i in findall(fractional_edges)
-        if first_vertex ∉ edges[i]
-            push!(candidate_cutsets,
-                  Cutset(graph, reverse_edges, [edges[i][1], edges[i][2]], w))
-        end
-    end
-
-    for fragment in sort(fragments, by = length)
-        push!(candidate_cutsets, Cutset(graph, reverse_edges, fragment, w))
-    end
-
-    while !isempty(candidate_cutsets)
-        cutset = popfirst!(candidate_cutsets)
-        # TODO: Track cutoff length in a nicer way.
-        if !isempty(cutsets) && length(cutset.vertices) > max(12, 2 + length(cutsets[1]))
-            break
-        end
-        margin = cycle_constraints_margin(cutset)
-        if margin < -0.001 && cutset.vertices ∉ cutsets
-            push!(cutsets, cutset.vertices)
-        else
-            best_v = -1
-            best_inflow_reduction = Inf
-            for v in fractional_inneighbors_of_cutset(graph, reverse_edges,
-                                                      cutset, fractional_edges,
-                                                      first_vertex)
-                Δ = inflow_change(graph, reverse_edges, cutset, v, w)
-                if Δ < best_inflow_reduction
-                    best_v = v
-                    best_inflow_reduction = Δ
-                end
-            end
-            if best_v != -1
-                push!(candidate_cutsets,
-                      add_vertex_to_cutset(graph, reverse_edges, cutset,
-                                           best_v, w))
-            end
+    for component in strongly_connected_components(graph2)
+        if cycle_constraints_margin(graph, reverse_edges,
+                                    solution, component) < -0.1
+            push!(cutsets, component)
         end
     end
 
     return cutsets
 end
 
-function fractional_inneighbors_of_cutset(graph, reverse_edges, cutset::Cutset,
-                                          fractional_edges, first_vertex)
-    neighbors = Int[]
-    for v in cutset.vertices
+function cycle_constraints_margin(graph, reverse_edges, solution, vertices)
+    total_internal_flow = 0.0
+    total_external_inflow = 0.0
+    max_internal_inflow = 0.0
+    for v in vertices
+        internal_inflow = 0.0
         for n in inneighbors(graph, v)
-            if n != first_vertex && n ∉ cutset.vertices && fractional_edges[reverse_edges[(n, v)]]
-                if n ∉ neighbors
-                    push!(neighbors, n)
+            e = reverse_edges[(n, v)]
+            if solution[e] > 0
+                if n ∈ vertices
+                    total_internal_flow += solution[e]
+                    internal_inflow += solution[e]
+                else
+                    total_external_inflow += solution[e]
                 end
             end
         end
+        if internal_inflow > max_internal_inflow
+            max_internal_inflow = internal_inflow
+        end
     end
 
-    return neighbors
-end
-
-function cycle_constraints_margin(cutset::Cutset)
-    margin = min(length(cutset.vertices) - 1 - cutset.total_internal_flow,
-                 cutset.total_external_inflow - cutset.max_internal_inflow)
+    margin = min(length(vertices) - 1 - total_internal_flow,
+                 total_external_inflow - max_internal_inflow)
 
     return margin
 end
