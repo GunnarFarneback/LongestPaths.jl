@@ -202,7 +202,7 @@ function find_longest_path(graph, first_vertex::Integer = 1,
 end
 
 "$(main_docstring)"
-function find_longest_cycle(graph, first_vertex = 1; kwargs...)
+function find_longest_cycle(graph, first_vertex = 0; kwargs...)
     return _find_longest_path(graph, first_vertex, first_vertex; kwargs...)
 end
 
@@ -210,7 +210,7 @@ end
 # cycle search is indicated by `first_vertex == last_vertex`.
 function _find_longest_path(graph, first_vertex, last_vertex;
                             initial_path = Int[],
-                            lower_bound = length(initial_path) - 1,
+                            lower_bound = -1,
                             upper_bound = nv(graph),
                             solver_mode = "ip",
                             cycle_constraint_mode = "cutset",
@@ -320,12 +320,12 @@ function _find_longest_path(graph, first_vertex, last_vertex;
             break
         end
 
-        path_edges = path_to_edge_variables(best_path, reverse_edges)
-
         if solver_mode == "lp" || (solver_mode == "lp+ip" && iteration % 2 == 1)
             solution = solve_LP(O)
             objbound = solution.objval
         else
+            path_edges = path_to_edge_variables(best_path, reverse_edges,
+                                                first_vertex == last_vertex)
             solution = solve_IP(O, path_edges, use_ip_warmstart,
                                 seconds = solver_time,
                                 allowableGap = max_gap,
@@ -348,7 +348,8 @@ function _find_longest_path(graph, first_vertex, last_vertex;
             lower_bound = max(lower_bound, length(best_path))
         end
 
-        lower_bound = max(lower_bound, length(main_path) - 1)
+        lower_bound = max(lower_bound,
+                          length(main_path) - (first_vertex != last_vertex))
         if length(main_path) > length(best_path)
             best_path = main_path
             new_longest_path_callback(best_path)
@@ -371,7 +372,7 @@ function _find_longest_path(graph, first_vertex, last_vertex;
         if !iteration_callback(iteration_data)
             break
         end
-        
+
         if lower_bound >= upper_bound || iteration == max_iterations
             break
         end
@@ -416,7 +417,7 @@ function _find_longest_path(graph, first_vertex, last_vertex;
 
         selected_cycles = select_cycles(cycles)
         constrain_cycles!(O, selected_cycles, edges,
-                          cycle_constraint_mode, first_vertex)
+                          cycle_constraint_mode, first_vertex, best_path)
     end
 
     return LongestPathOrCycle(first_vertex == last_vertex,
@@ -438,11 +439,14 @@ function print_iteration_data(data)
 end
 
 # Convert a path to the corresponding setting of binary edge variables.
-function path_to_edge_variables(path, reverse_edges)
+function path_to_edge_variables(path, reverse_edges, is_cycle)
     e = zeros(Float64, length(reverse_edges))
     for k = 1:length(path) - 1
         v1, v2 = path[k], path[k + 1]
         e[reverse_edges[(v1, v2)]] = 1
+    end
+    if is_cycle
+        e[reverse_edges[(path[end], path[1])]] = 1
     end
     return e
 end
@@ -625,63 +629,75 @@ function add_cycle_constraints_to_formulation(O::OptProblem)
     return A, lb, ub
 end
 
-function follow_path(graph, reverse_edges, w, v1)
-    if v1 == 0
-        return Int[], false
-    end
-    path = [v1]
+# Find a path or cycle starting at `v`.
+#
+# This function relies on the assumption that each vertex has at most
+# one incoming and at most one outgoing edge.
+function follow_path(graph, v)
+    path = [v]
     while true
-        v = path[end]
-        successor_found = false
-        for v2 in outneighbors(graph, v)
-            e = reverse_edges[(v, v2)]
-            if w[e]
-                w[e] = false
-                if v2 == v1
-                    return path, true
-                end
-                push!(path, v2)
-                successor_found = true
-            end
-        end
-        if !successor_found
+        n = outneighbors(graph, path[end])
+        if isempty(n)
             break
+        elseif n[1] == v
+            return path, true
         end
+        push!(path, n[1])
     end
 
     return path, false
 end
 
-# TODO: Check if something needs to be done in the last_vertex != 0 case.
+# Find a path from `first_vertex`, a cycle through `first_vertex`, or
+# a long cycle. Complement with additional cycles.
+#
+# By filtering out edges with value less than 0.51 it is guaranteed
+# that each vertex has at most one incoming and at most one outgoing
+# edge. As a corollary every strongly connected component with more
+# than one vertex contains exactly one cycle.
 function extract_paths(graph, edges, reverse_edges, first_vertex, last_vertex,
                        solution)
-    w = solution .>= 0.51
-    n = sum(w)
-    cycles = Vector{Int}[]
-    main_path, is_cycle = follow_path(graph, reverse_edges, w, first_vertex)
-    if !is_cycle && last_vertex != 0 && main_path[end] != last_vertex
-        # This should never happen for an integer solution but could
-        # happen, and is rather likely to, for a fractional solution.
-        n -= length(main_path) - 1
-        main_path = Int[]
-    end
-    if !isempty(main_path)
-        n -= length(main_path) - !is_cycle
-    end
-    while n > 0
-        if sum(w) != n
-            @assert sum(w) == n
+    graph2 = SimpleDiGraph(nv(graph))
+    for i = 1:length(solution)
+        if solution[i] >= 0.51
+            add_edge!(graph2, edges[i]...)
         end
-        path, is_cycle = follow_path(graph, reverse_edges, w,
-                                     edges[findfirst(w)][1])
-        if is_cycle
-            push!(cycles, path)
-        end
-        n -= length(path) - !is_cycle
     end
 
-    return main_path, cycles
+    cutsets = filter(x -> length(x) > 1, strongly_connected_components(graph2))
+
+    if first_vertex != last_vertex
+        main_path, is_cycle = follow_path(graph2, first_vertex)
+        @assert !is_cycle
+        if 0 != last_vertex != main_path[end]
+            main_path = Int[]
+        end
+    else
+        if isempty(cutsets)
+            return Int[], cutsets
+        end
+
+        if first_vertex != 0
+            cutsets = filter(x -> first_vertex ∉ x, cutsets)
+            main_path, is_cycle = follow_path(graph2, first_vertex)
+            if !is_cycle
+                main_path = Int[]
+            end
+        else
+            _, i = findmax(length.(cutsets))
+            main_path, is_cycle = follow_path(graph2, cutsets[i][1])
+            @assert is_cycle
+            if i < length(cutsets)
+                cutsets[i] = pop!(cutsets)
+            else
+                pop!(cutsets)
+            end
+        end
+    end
+
+    return main_path, cutsets
 end
+
 
 function find_fractional_cutsets(graph, edges, reverse_edges, solution)
     graph2 = SimpleDiGraph(nv(graph))
@@ -796,11 +812,35 @@ end
 #
 # Return the number of added constraints.
 function constrain_cycles!(O::OptProblem, cycles, edges,
-                           cycle_constraint_mode, first_vertex)
+                           cycle_constraint_mode, first_vertex, best_path)
     previous_number_of_constraints = length(O.cycle_constraints)
     for cycle in cycles
-        if first_vertex ∈ cycle
-            continue
+        # We need to filter out some cutsets to make sure we don't
+        # lose any best solution or end up with an infeasible system.
+        if first_vertex != 0
+            # If searching for a path or for a cycle through a
+            # specified vertex, the first_vertex must not be part of
+            # any cutset constraint.
+            #
+            # TODO: Actually, it's ok to filter out shorter cycles
+            # through the first vertex when searching for cycles. It's
+            # not strictly necessary in order to find the optimal
+            # solution but it may improve the efficiency.
+            if first_vertex ∈ cycle
+                continue
+            end
+        else
+            # When searching for a cycle anywhere, we don't want to
+            # remove the current best solution but we also can't
+            # remove longer cutsets in case one of those happens to
+            # contain the longest cycle.
+            if length(cycle) == length(best_path)
+                if isempty(setdiff(cycle, best_path))
+                    continue
+                end
+            elseif length(cycle) > length(best_path)
+                continue
+            end
         end
 
         if cycle_constraint_mode == "cycle" || cycle_constraint_mode == "both"
@@ -818,10 +858,12 @@ function constrain_cycles!(O::OptProblem, cycles, edges,
 
         if cycle_constraint_mode == "cutset" || cycle_constraint_mode == "both"
             # Find all incoming edges to the cycle.
+            # TODO: Check whether this can be computed more efficiently.
             incoming_edges_to_cycle = findall([edge[1] ∉ cycle && edge[2] ∈ cycle for edge in edges])
             # Add one constraint for each vertex in the cycle.
             for vertex in cycle
                 A = spzeros(Int, size(O.A, 2))
+                # TODO: Check whether this can be computed more efficiently.
                 incoming_edges_to_vertex = findall([edge[2] == vertex for edge in edges])
                 # The number of incoming edges to the vertex must be
                 # smaller or equal to the number of incoming edges to

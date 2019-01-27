@@ -102,6 +102,8 @@ end
     end
 end
 
+# We need to disable warmstart in some cases to work around
+# https://github.com/JuliaOpt/Cbc.jl/issues/99.
 @testset "complete graphs" begin
     for n = 2:10
         g = CompleteDiGraph(n)
@@ -109,7 +111,7 @@ end
         r = find_longest_path(g)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
 
-        r = find_longest_cycle(g)
+        r = find_longest_cycle(g, use_ip_warmstart = false)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) == n
 
         for i = 1:n
@@ -117,7 +119,7 @@ end
             @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
             for j = 1:n
                 if i == j
-                    r = find_longest_cycle(g, i)
+                    r = find_longest_cycle(g, i, use_ip_warmstart = false)
                     @test r.lower_bound == r.upper_bound == length(r.longest_path) == n
                 else
                     r = find_longest_path(g, i, j)
