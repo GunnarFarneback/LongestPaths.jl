@@ -14,5 +14,6 @@ starting with vertex one and ending anywhere.
 module LongestPaths
 
 include("longest_path.jl")
+include("utils.jl")
 
 end
