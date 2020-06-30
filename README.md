@@ -44,14 +44,6 @@ julia> g = erdos_renyi(500, 0.005, is_directed=true, seed=13)
 {500, 1286} directed simple Int64 graph
 
 julia> find_longest_path(g)
-Please ignore this output. At the moment it's necessary in order to suppress later output.
----------------------
-Presolve 0 (-2) rows, 0 (-2) columns and 0 (-4) elements
-Optimal - objective value 1
-After Postsolve, objective 1, infeasibilities - dual 0 (0), primal 0 (0)
-Optimal objective 1 - 0 iterations time 0.002, Presolve 0.00
-Cbc0045I Solution with objective value -1 saved
----------------------
   1     1 [267 352] 0 0 Optimal 352.0 352.0
   2     2 [267 352] 0 24 Optimal 352.0 352.0
   3     2 [267 352] 0 112 Optimal 352.0 352.0

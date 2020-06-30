@@ -8,7 +8,6 @@ using LightGraphs
 using SparseArrays
 using Printf
 using Random
-using Suppressor
 
 """
     LongestPathOrCycle
@@ -273,20 +272,6 @@ function _find_longest_path(graph, first_vertex, last_vertex;
         end
     end
 
-    # Terribly ugly but these lines forces a trace message from
-    # `setwarmstart!`, after which all following ones can be suppressed.
-    # Without these three lines, output from `setwarmstart!` is only
-    # momentarily suppressed but comes back slightly delayed.
-    # See https://github.com/JuliaOpt/Cbc.jl/issues/78.
-    if log_level < 2 && solver_mode != "lp" && use_ip_warmstart
-        println("Please ignore this output. At the moment it's necessary in order to suppress later output.")
-        println("---------------------")
-        model = LinearQuadraticModel(CbcSolver(logLevel=0))
-        loadproblem!(model, ones(2,2), zeros(2), ones(2), ones(2), zeros(2), ones(2), :Max)
-        setwarmstart!(model, zeros(2))
-        println("---------------------")
-    end
-
     O, edges = OptProblem(graph, first_vertex, last_vertex)
     reverse_edges = Dict(edges[k] => k for k = 1:length(edges))
 
@@ -303,7 +288,8 @@ function _find_longest_path(graph, first_vertex, last_vertex;
             best_path = filter_out_longest_cycle!(best_path, cycles,
                                                   new_longest_path_callback)
         end
-        constrain_cycles!(O, cycles, edges, cycle_constraint_mode, first_vertex)
+        constrain_cycles!(O, cycles, edges, cycle_constraint_mode,
+                          first_vertex, best_path)
     end
 
     solution = nothing
@@ -596,11 +582,7 @@ function solve_IP(O::OptProblem, initial_solution = Int[],
     setvartype!(model, O.vartypes)
     original_stdout = stdout
     if !isempty(initial_solution) && use_warmstart
-        if values(kw).logLevel < 1
-            @suppress setwarmstart!(model, initial_solution)
-        else
-            setwarmstart!(model, initial_solution)
-        end
+        setwarmstart!(model, initial_solution)
     end
     optimize!(model)
    

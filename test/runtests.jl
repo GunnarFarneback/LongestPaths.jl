@@ -37,30 +37,30 @@ end
 
 @testset "path graphs" begin
     for n = 1:10
-        g = PathDiGraph(n)
+        g = path_digraph(n)
 
-        r = find_longest_path(g)
+        r = find_longest_path(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
         @test r.longest_path == 1:n
 
-        r = find_longest_cycle(g)
+        r = find_longest_cycle(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == -1
 
         for i = 1:n
-            r = find_longest_path(g, i)
+            r = find_longest_path(g, i, log_level = 0)
             @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - i
             @test r.longest_path == i:n
 
-            r = find_longest_cycle(g, i)
+            r = find_longest_cycle(g, i, log_level = 0)
             @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == -1
             for j = 1:i-1
-                r = find_longest_path(g, i, j)
+                r = find_longest_path(g, i, j, log_level = 0)
                 @test r.lower_bound == r.upper_bound == -1
                 @test isempty(r.longest_path)
             end
 
             for j = i+1:n
-                r = find_longest_path(g, i, j)
+                r = find_longest_path(g, i, j, log_level = 0)
                 @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == j - i
                 @test r.longest_path == i:j
             end
@@ -70,26 +70,26 @@ end
 
 @testset "cycle graphs" begin
     for n = 2:10
-        g = CycleDiGraph(n)
+        g = cycle_digraph(n)
 
-        r = find_longest_path(g)
+        r = find_longest_path(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
         @test r.longest_path == 1:n
 
-        r = find_longest_cycle(g)
+        r = find_longest_cycle(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) == n
 
         for i = 1:n
-            r = find_longest_path(g, i)
+            r = find_longest_path(g, i, log_level = 0)
             @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
             @test r.longest_path == vcat(i:n, 1:(i-1))
             for j = 1:n
                 if i == j
-                    r = find_longest_cycle(g, i)
+                    r = find_longest_cycle(g, i, log_level = 0)
                     @test r.lower_bound == r.upper_bound == length(r.longest_path) == n
                     @test r.longest_path == vcat(i:n, 1:(i-1))
                 else
-                    r = find_longest_path(g, i, j)
+                    r = find_longest_path(g, i, j, log_level = 0)
                     @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == mod(j - i, n)
                     if i < j
                         @test r.longest_path == i:j
@@ -102,27 +102,25 @@ end
     end
 end
 
-# We need to disable warmstart in some cases to work around
-# https://github.com/JuliaOpt/Cbc.jl/issues/99.
 @testset "complete graphs" begin
     for n = 2:10
-        g = CompleteDiGraph(n)
+        g = complete_digraph(n)
 
-        r = find_longest_path(g)
+        r = find_longest_path(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
 
-        r = find_longest_cycle(g, use_ip_warmstart = false)
+        r = find_longest_cycle(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) == n
 
         for i = 1:n
-            r = find_longest_path(g, i)
+            r = find_longest_path(g, i, log_level = 0)
             @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
             for j = 1:n
                 if i == j
-                    r = find_longest_cycle(g, i, use_ip_warmstart = false)
+                    r = find_longest_cycle(g, i, log_level = 0)
                     @test r.lower_bound == r.upper_bound == length(r.longest_path) == n
                 else
-                    r = find_longest_path(g, i, j)
+                    r = find_longest_path(g, i, j, log_level = 0)
                     @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == n - 1
                 end
             end
@@ -132,20 +130,17 @@ end
 
 @testset "bipartite graphs" begin
     for m = 1:10, n = 1:10
-        g = DiGraph(CompleteBipartiteGraph(m, n))
-        r = find_longest_path(g)
+        g = DiGraph(complete_bipartite_graph(m, n))
+        r = find_longest_path(g, log_level = 0)
         @test r.lower_bound == r.upper_bound == length(r.longest_path) - 1 == 2 * min(m, n) - (m <= n)
     end        
 end
 
-# We need to disable warmstart to work around
-# https://github.com/JuliaOpt/Cbc.jl/issues/94.
 function test_longest_path(g, first_vertex, last_vertex, correct)
     if first_vertex != last_vertex
-        r = find_longest_path(g, first_vertex, last_vertex,
-                              use_ip_warmstart = false)
+        r = find_longest_path(g, first_vertex, last_vertex, log_level = 0)
     else
-        r = find_longest_cycle(g, first_vertex, use_ip_warmstart = false)
+        r = find_longest_cycle(g, first_vertex, log_level = 0)
     end
     if r.lower_bound != correct || r.upper_bound != correct
         return false
