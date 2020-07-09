@@ -23,17 +23,16 @@ is returned together with the longest path found.
 Find the longest simple cycle in a directed LightGraphs graph, which
 includes `first_vertex`. If `first_vertex` is 0 the cycle may be
 anywhere. If time limits or other restrictions prevent finding an
-optimal path, an upper bound on the maximum length is returned
+optimal cycle, an upper bound on the maximum length is returned
 together with the longest cycle found.
 
 ## Adding LongestPaths
 
-LongestPaths is not a registered Julia package but can be installed
-directly from the GitHub repository.
+LongestPaths is a registered Julia package.
 
 In Julia `pkg` mode (press `]`):
 ```
-pkg> add https://github.com/GunnarFarneback/LongestPaths.jl.git
+pkg> add LongestPaths
 ```
 
 ## Usage Example
@@ -123,7 +122,7 @@ relaxation. That is also the default in the `longest_path` function.
 * Generalize to weighted longest paths. This is mostly
   straightforward.
 
-* Add more tests and set up CI.
+* Add more tests.
 
 * Add benchmarks.
 
