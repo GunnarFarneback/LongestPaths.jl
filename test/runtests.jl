@@ -146,7 +146,7 @@ function test_longest_path(g, first_vertex, last_vertex, correct)
         return false
     end
     if !isa(correct, Array)
-        if length(r.longest_path) - !r.is_cycle != correct
+        if path_length(r.longest_path, r.weights) != correct
             return false
         end
     else
