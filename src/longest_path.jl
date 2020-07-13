@@ -1,4 +1,4 @@
-export LongestPathOrCycle, find_longest_path, find_longest_cycle
+export LongestPathOrCycle, find_longest_path, find_longest_cycle, path_length
 
 using MathProgBase
 using MathProgBase.SolverInterface
@@ -9,25 +9,46 @@ using SparseArrays
 using Printf
 using Random
 
+abstract type AbstractWeightedPath end
+struct UnweightedPath <: AbstractWeightedPath end
+struct UnweightedCycle <: AbstractWeightedPath end
+struct WeightedPath <: AbstractWeightedPath
+    weights::Dict{Tuple{Int, Int}, Float64}
+end
+struct WeightedCycle <: AbstractWeightedPath
+    weights::Dict{Tuple{Int, Int}, Float64}
+end
+
+are_cycle_weights(::UnweightedPath) = false
+are_cycle_weights(::UnweightedCycle) = true
+are_cycle_weights(::WeightedPath) = false
+are_cycle_weights(::WeightedCycle) = true
+
+are_weighted(::UnweightedPath) = false
+are_weighted(::UnweightedCycle) = false
+are_weighted(::WeightedPath) = true
+are_weighted(::WeightedCycle) = true
+
 """
     LongestPathOrCycle
 
 Type used for the return values of `longest_path`. See the function
 documentation for more information.
 """
-mutable struct LongestPathOrCycle
-    is_cycle::Bool
-    lower_bound::Int
-    upper_bound::Int
+mutable struct LongestPathOrCycle{T <: AbstractWeightedPath, S}
+    weights::T
+    lower_bound::S
+    upper_bound::S
     longest_path::Vector{Int}
     internals::Dict{String, Any}
 end
 
 # TODO: Handle empty paths nicely.
 function Base.show(io::IO, x::LongestPathOrCycle)
-    kind = x.is_cycle ? "cycle" : "path"
-    n = max(0, length(x.longest_path) - !x.is_cycle)
-    println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of length $(n).")
+    kind = are_cycle_weights(x.weights) ? "cycle" : "path"
+    n = max(0, path_length(x.longest_path, weights))
+    length_str = are_weighted(w.weights) ? "weight" : "length"
+    println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of $(length_str) $(n).")
 end
 
 # General TODO: Check that self-loops are handled gracefully.
@@ -67,7 +88,7 @@ Note: Unless otherwise specified, both paths and cycles are called
 "paths" in the following and they are always assumed to be simple,
 i.e. no repeated vertices are allowed.
 
-*Keywords arguments:*
+*Keyword arguments:*
 
 * `initial_path`: Search can be warmstarted by providing a valid path
   as a vector of vertices. Default is an empty vector.
@@ -177,7 +198,10 @@ Notes:
 
 "$(main_docstring)"
 function find_longest_path(graph, first_vertex::Integer = 1,
-                           last_vertex::Integer = 0; kwargs...)
+                           last_vertex::Integer = 0;
+                           weights = nothing, kwargs...)
+    w = get_weights(weights, false)
+
     # TODO: Do the reversal ourselves and perform the search?
     if first_vertex == 0 && last_vertex != 0
         error("Search from anywhere to a specified vertex is not supported. Reverse the graph and search in the opposite direction instead.")
@@ -188,26 +212,41 @@ function find_longest_path(graph, first_vertex::Integer = 1,
     end
 
     if first_vertex == last_vertex != 0
-        return LongestPathOrCycle(false, 0, 0, [first_vertex], Dict())
+        path = [first_vertex]
+        lb = ub = path_length(path, w)
+        return LongestPathOrCycle(w, lb, ub, path, Dict{String, Any}())
     end
 
     # TODO: Check why this really is necessary. (I.e. why the main
     # function doesn't handle this case correctly.)
     if last_vertex == 0 && isempty(outneighbors(graph, first_vertex))
-        return LongestPathOrCycle(false, 0, 0, [first_vertex], Dict())
+        path = [first_vertex]
+        lb = ub = path_length(path, w)
+        return LongestPathOrCycle(w, lb, ub, path, Dict{String, Any}())
     end
 
-    return _find_longest_path(graph, first_vertex, last_vertex; kwargs...)
+    return _find_longest_path(graph, w, first_vertex, last_vertex; kwargs...)
 end
 
 "$(main_docstring)"
-function find_longest_cycle(graph, first_vertex = 0; kwargs...)
-    return _find_longest_path(graph, first_vertex, first_vertex; kwargs...)
+function find_longest_cycle(graph, first_vertex = 0;
+                            weights = nothing, kwargs...)
+    w = get_weights(weights, true)
+    return _find_longest_path(graph, w, first_vertex, first_vertex; kwargs...)
+end
+
+function get_weights(weights::Nothing, is_cycle)
+    return is_cycle ? UnweightedCycle() : UnweightedPath()
+end
+
+function get_weights(weights::Dict{Tuple{Int, Int}, Float64}, is_cycle)
+    return is_cycle ? weightedCycle(weights) : WeightedPath(weights)
 end
 
 # The main search function for both paths and cycles. At this point
-# cycle search is indicated by `first_vertex == last_vertex`.
-function _find_longest_path(graph, first_vertex, last_vertex;
+# cycle search is indicated by `first_vertex == last_vertex` and by
+# the type of `weights`.
+function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
                             initial_path = Int[],
                             lower_bound = -1,
                             upper_bound = nv(graph),
@@ -221,11 +260,12 @@ function _find_longest_path(graph, first_vertex, last_vertex;
                             use_ip_warmstart = true,
                             log_level = 1,
                             new_longest_path_callback = x -> nothing,
-                            iteration_callback = print_iteration_data)
+                            iteration_callback = print_iteration_data) where T
     if !is_directed(graph)
         error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation.")
     end
 
+    @assert xor(first_vertex == last_vertex, !are_cycle_weights(weights))
     # TODO: Convert these to proper validation of user input.
     @assert(solver_mode ∈ ["lp", "lp+ip", "ip"],
             "solver_mode must be one of \"lp\", \"lp+ip\", \"ip\"")
@@ -246,8 +286,11 @@ function _find_longest_path(graph, first_vertex, last_vertex;
     if first_vertex != last_vertex != 0
         path = get_path(graph, first_vertex, last_vertex)
         if isempty(path)
-            return LongestPathOrCycle(false, -1, -1, Int[], Dict())
-        elseif length(path) > length(initial_path)
+            path = Int[]
+            lb = ub = path_length(path, weights)
+            return LongestPathOrCycle(weights, lb, ub, path,
+                                      Dict{String, Any}())
+        elseif path_length(path, weights) > path_length(initial_path, weights)
             new_longest_path_callback(path)
             # Replacing `initial_path` is sort of misleading but the
             # most convenient way to get it into `best_path` later.
@@ -263,8 +306,11 @@ function _find_longest_path(graph, first_vertex, last_vertex;
         end
 
         if isempty(cycle)
-            return LongestPathOrCycle(true, -1, -1, Int[], Dict())
-        elseif length(cycle) > length(initial_path)
+            path = Int[]
+            lb = ub = path_length(path, weights)
+            return LongestPathOrCycle(weights, lb, ub, path,
+                                      Dict{String, Any}())
+        elseif cycle_length(cycle, weights) > cycle_length(initial_path, weights)
             new_longest_path_callback(cycle)
             # Replacing `initial_path` is sort of misleading but the
             # most convenient way to get it into `best_path` later.
@@ -277,18 +323,18 @@ function _find_longest_path(graph, first_vertex, last_vertex;
 
     best_path = initial_path
     if first_vertex == last_vertex
-        lower_bound = max(lower_bound, length(best_path))
+        lower_bound = max(lower_bound, cycle_length(best_path, weights))
     else
-        lower_bound = max(lower_bound, length(best_path) - 1)
+        lower_bound = max(lower_bound, path_length(best_path, weights))
     end
 
     if initial_cycle_constraints > 1
         cycles = simplecycles_limited_length(graph, initial_cycle_constraints)
         if first_vertex == last_vertex == 0
-            best_path = filter_out_longest_cycle!(best_path, cycles,
+            best_path = filter_out_longest_cycle!(best_path, weights, cycles,
                                                   new_longest_path_callback)
         end
-        constrain_cycles!(O, cycles, edges, cycle_constraint_mode,
+        constrain_cycles!(O, weights, cycles, edges, cycle_constraint_mode,
                           first_vertex, best_path)
     end
 
@@ -299,6 +345,8 @@ function _find_longest_path(graph, first_vertex, last_vertex;
     cycles = Vector{Int}[]
     
     for iteration = 1:max_iterations
+        # Attention: This might need to be done differently for
+        # weighted problems.
         max_gap = min(max_gap, upper_bound - lower_bound - 1)
 
         solver_time = min(solver_time_limit, time_limit - (time() - start_time))
@@ -319,6 +367,7 @@ function _find_longest_path(graph, first_vertex, last_vertex;
             objbound = solution.attrs[:objbound]
         end
 
+        # Attention: This needs to be done differently for weighted problems.
         upper_bound = min(upper_bound, floor(Int, round(objbound, digits = 3)))
 
         main_path, cycles = extract_paths(graph, edges,
@@ -328,15 +377,15 @@ function _find_longest_path(graph, first_vertex, last_vertex;
 
         if first_vertex == last_vertex
             if first_vertex == 0
-                best_path = filter_out_longest_cycle!(best_path, cycles,
+                best_path = filter_out_longest_cycle!(best_path, weights,
+                                                      cycles,
                                                       new_longest_path_callback)
             end
-            lower_bound = max(lower_bound, length(best_path))
+            lower_bound = max(lower_bound, cycle_length(best_path, weights))
         end
 
-        lower_bound = max(lower_bound,
-                          length(main_path) - (first_vertex != last_vertex))
-        if length(main_path) > length(best_path)
+        lower_bound = max(lower_bound, path_length(main_path, weights))
+        if path_length(main_path, weights) > path_length(best_path, weights)
             best_path = main_path
             new_longest_path_callback(best_path)
         end
@@ -377,7 +426,7 @@ function _find_longest_path(graph, first_vertex, last_vertex;
             # `constrain_cycles!` will filter out cycles through that
             # vertex.
             if first_vertex == last_vertex == 0
-                cutsets = filter(x -> length(x) < length(best_path), cutsets)
+                cutsets = filter(x -> cycle_length(x, weights) < cycle_length(best_path,weights), cutsets)
             end
 
             append!(cycles, cutsets)
@@ -402,11 +451,11 @@ function _find_longest_path(graph, first_vertex, last_vertex;
         end
 
         selected_cycles = select_cycles(cycles)
-        constrain_cycles!(O, selected_cycles, edges,
+        constrain_cycles!(O, weights, selected_cycles, edges,
                           cycle_constraint_mode, first_vertex, best_path)
     end
 
-    return LongestPathOrCycle(first_vertex == last_vertex,
+    return LongestPathOrCycle(weights,
                               lower_bound, upper_bound,
                               best_path,
                               Dict("O" => O, "edges" => edges,
@@ -414,6 +463,11 @@ function _find_longest_path(graph, first_vertex, last_vertex;
                                    "last_cycles" => cycles,
                                    "last_solution" => solution))
 end
+
+path_length(path, weights::UnweightedPath) = length(path) - 1
+path_length(path, weights::UnweightedCycle) = length(path) - isempty(path)
+cycle_length(path, weights::UnweightedCycle) = path_length(path, weights)
+cycle_length(path, weights::UnweightedPath) = error("Don't use this.")
 
 function print_iteration_data(data)
     if data.log_level > 0
@@ -738,17 +792,18 @@ end
 # and filter it out, but a simpler solution is to just switch to a new
 # cycle of the same length as the previous best and filter that one
 # out, which is trivial.
-function filter_out_longest_cycle!(best_path, cycles, new_longest_path_callback)
+function filter_out_longest_cycle!(best_path, weights,
+                                   cycles, new_longest_path_callback)
     if isempty(cycles)
         return best_path
     end
 
-    cycle_lengths = length.(cycles)
+    cycle_lengths = cycle_length.(cycles, Ref(weights))
     longest_cycle = maximum(cycle_lengths)
 
     # Current best cycle is longer than all cycles to be eliminated.
     # Nothing needs to be done.
-    if longest_cycle < length(best_path)
+    if longest_cycle < cycle_length(best_path, weights)
         return best_path
     end
 
@@ -758,7 +813,7 @@ function filter_out_longest_cycle!(best_path, cycles, new_longest_path_callback)
     cycles = deleteat!(cycles, i)
 
     # Replace the current best cycle with the new cycle (by returning it).
-    if length(cycle) > length(best_path)
+    if cycle_length(cycle, weights) > cycle_length(best_path, weights)
         new_longest_path_callback(best_path)
     end
     return cycle
@@ -793,7 +848,7 @@ end
 # the ingoing edges to the entire cycle.
 #
 # Return the number of added constraints.
-function constrain_cycles!(O::OptProblem, cycles, edges,
+function constrain_cycles!(O::OptProblem, weights, cycles, edges,
                            cycle_constraint_mode, first_vertex, best_path)
     previous_number_of_constraints = length(O.cycle_constraints)
     for cycle in cycles
@@ -816,11 +871,11 @@ function constrain_cycles!(O::OptProblem, cycles, edges,
             # remove the current best solution but we also can't
             # remove longer cutsets in case one of those happens to
             # contain the longest cycle.
-            if length(cycle) == length(best_path)
+            if cycle_length(cycle, weights) == cycle_length(best_path, weights)
                 if isempty(setdiff(cycle, best_path))
                     continue
                 end
-            elseif length(cycle) > length(best_path)
+            elseif cycle_length(cycle, weights) > cycle_length(best_path, weights)
                 continue
             end
         end
