@@ -9,14 +9,14 @@ using SparseArrays
 using Printf
 using Random
 
-abstract type AbstractWeightedPath end
-struct UnweightedPath <: AbstractWeightedPath end
-struct UnweightedCycle <: AbstractWeightedPath end
-struct WeightedPath <: AbstractWeightedPath
-    weights::Dict{Tuple{Int, Int}, Float64}
+abstract type AbstractWeightedPath{T} end
+struct UnweightedPath <: AbstractWeightedPath{Int} end
+struct UnweightedCycle <: AbstractWeightedPath{Int} end
+struct WeightedPath{T} <: AbstractWeightedPath{T}
+    weights::Dict{Tuple{Int, Int}, T}
 end
-struct WeightedCycle <: AbstractWeightedPath
-    weights::Dict{Tuple{Int, Int}, Float64}
+struct WeightedCycle{T} <: AbstractWeightedPath{T}
+    weights::Dict{Tuple{Int, Int}, T}
 end
 
 are_cycle_weights(::UnweightedPath) = false
@@ -345,9 +345,11 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
     cycles = Vector{Int}[]
     
     for iteration = 1:max_iterations
-        # Attention: This might need to be done differently for
-        # weighted problems.
-        max_gap = min(max_gap, upper_bound - lower_bound - 1)
+        if weights isa AbstractWeightedPath{<:Integer}
+            max_gap = min(max_gap, upper_bound - lower_bound - 1)
+        else
+            max_gap = min(max_gap, 0.99 * (upper_bound - lower_bound))
+        end
 
         solver_time = min(solver_time_limit, time_limit - (time() - start_time))
         if solver_time < solver_time_limit / 2
@@ -367,8 +369,9 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
             objbound = solution.attrs[:objbound]
         end
 
-        # Attention: This needs to be done differently for weighted problems.
-        upper_bound = min(upper_bound, floor(Int, round(objbound, digits = 3)))
+        if weights isa AbstractWeightedPath{<:Integer}
+            upper_bound = min(upper_bound, floor(Int, round(objbound, digits = 3)))
+        end
 
         main_path, cycles = extract_paths(graph, edges,
                                           reverse_edges,
