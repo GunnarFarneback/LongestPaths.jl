@@ -310,7 +310,7 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
             lb = ub = path_length(path, weights)
             return LongestPathOrCycle(weights, lb, ub, path,
                                       Dict{String, Any}())
-        elseif cycle_length(cycle, weights) > cycle_length(initial_path, weights)
+        elseif path_length(cycle, weights) > path_length(initial_path, weights)
             new_longest_path_callback(cycle)
             # Replacing `initial_path` is sort of misleading but the
             # most convenient way to get it into `best_path` later.
@@ -322,11 +322,7 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
     reverse_edges = Dict(edges[k] => k for k = 1:length(edges))
 
     best_path = initial_path
-    if first_vertex == last_vertex
-        lower_bound = max(lower_bound, cycle_length(best_path, weights))
-    else
-        lower_bound = max(lower_bound, path_length(best_path, weights))
-    end
+    lower_bound = max(lower_bound, path_length(best_path, weights))
 
     if initial_cycle_constraints > 1
         cycles = simplecycles_limited_length(graph, initial_cycle_constraints)
@@ -384,7 +380,7 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
                                                       cycles,
                                                       new_longest_path_callback)
             end
-            lower_bound = max(lower_bound, cycle_length(best_path, weights))
+            lower_bound = max(lower_bound, path_length(best_path, weights))
         end
 
         lower_bound = max(lower_bound, path_length(main_path, weights))
@@ -429,7 +425,7 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
             # `constrain_cycles!` will filter out cycles through that
             # vertex.
             if first_vertex == last_vertex == 0
-                cutsets = filter(x -> cycle_length(x, weights) < cycle_length(best_path,weights), cutsets)
+                cutsets = filter(x -> path_length(x, weights) < path_length(best_path,weights), cutsets)
             end
 
             append!(cycles, cutsets)
@@ -469,8 +465,6 @@ end
 
 path_length(path, weights::UnweightedPath) = length(path) - 1
 path_length(path, weights::UnweightedCycle) = length(path) - isempty(path)
-cycle_length(path, weights::UnweightedCycle) = path_length(path, weights)
-cycle_length(path, weights::UnweightedPath) = error("Don't use this.")
 
 function print_iteration_data(data)
     if data.log_level > 0
@@ -801,12 +795,12 @@ function filter_out_longest_cycle!(best_path, weights,
         return best_path
     end
 
-    cycle_lengths = cycle_length.(cycles, Ref(weights))
+    cycle_lengths = path_length.(cycles, Ref(weights))
     longest_cycle = maximum(cycle_lengths)
 
     # Current best cycle is longer than all cycles to be eliminated.
     # Nothing needs to be done.
-    if longest_cycle < cycle_length(best_path, weights)
+    if longest_cycle < path_length(best_path, weights)
         return best_path
     end
 
@@ -816,7 +810,7 @@ function filter_out_longest_cycle!(best_path, weights,
     cycles = deleteat!(cycles, i)
 
     # Replace the current best cycle with the new cycle (by returning it).
-    if cycle_length(cycle, weights) > cycle_length(best_path, weights)
+    if path_length(cycle, weights) > path_length(best_path, weights)
         new_longest_path_callback(best_path)
     end
     return cycle
@@ -874,11 +868,11 @@ function constrain_cycles!(O::OptProblem, weights, cycles, edges,
             # remove the current best solution but we also can't
             # remove longer cutsets in case one of those happens to
             # contain the longest cycle.
-            if cycle_length(cycle, weights) == cycle_length(best_path, weights)
+            if path_length(cycle, weights) == path_length(best_path, weights)
                 if isempty(setdiff(cycle, best_path))
                     continue
                 end
-            elseif cycle_length(cycle, weights) > cycle_length(best_path, weights)
+            elseif path_length(cycle, weights) > path_length(best_path, weights)
                 continue
             end
         end
