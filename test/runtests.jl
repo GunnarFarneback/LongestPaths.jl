@@ -3,20 +3,22 @@ using LongestPaths
 using LightGraphs
 
 # Brute force search for the longest path using dfs.
-function dfs_longest_path(g::AbstractGraph{T}, first_vertex,
+function dfs_longest_path(g::AbstractGraph{T}, weights, first_vertex,
                           last_vertex = 0) where T
     visited = falses(nv(g))
     path = Vector{T}()
     longest_path = Vector{T}()
     push!(path, first_vertex)
     visited[first_vertex] = true
-    recurse_dfs_longest_path!(g, last_vertex, visited, path, longest_path)
+    recurse_dfs_longest_path!(g, weights, last_vertex, visited,
+                              path, longest_path)
     return longest_path
 end
 
-function recurse_dfs_longest_path!(g, last_vertex, visited, path, longest_path)
+function recurse_dfs_longest_path!(g, weights, last_vertex, visited,
+                                   path, longest_path)
     v = path[end]
-    if (last_vertex == 0 || v == last_vertex) && length(path) > length(longest_path)
+    if (last_vertex == 0 || v == last_vertex) && path_length(path, weights) > path_length(longest_path, weights)
         resize!(longest_path, length(path))
         copyto!(longest_path, path)
     end
@@ -27,7 +29,7 @@ function recurse_dfs_longest_path!(g, last_vertex, visited, path, longest_path)
         if !visited[n]
             push!(path, n)
             visited[n] = true
-            recurse_dfs_longest_path!(g, last_vertex, visited, path,
+            recurse_dfs_longest_path!(g, weights, last_vertex, visited, path,
                                       longest_path)
             visited[n] = false
             pop!(path)
@@ -159,8 +161,9 @@ end
 
 @testset "sedgewickmaze" begin
     g = DiGraph(smallgraph(:sedgewickmaze))
+    w = LongestPaths.UnweightedPath()
     all_cycles = simplecycles_hawick_james(g)
-    longest_paths = dfs_longest_path.((g,), 1:8, permutedims(1:8))
+    longest_paths = dfs_longest_path.((g,), (w,), 1:8, permutedims(1:8))
     @test test_longest_path(g, 0, 0, maximum(length.(all_cycles)))
     for i = 1:8
         for j = 0:8
