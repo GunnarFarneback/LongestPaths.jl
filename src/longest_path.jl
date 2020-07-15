@@ -46,8 +46,8 @@ end
 # TODO: Handle empty paths nicely.
 function Base.show(io::IO, x::LongestPathOrCycle)
     kind = are_cycle_weights(x.weights) ? "cycle" : "path"
-    n = max(0, path_length(x.longest_path, weights))
-    length_str = are_weighted(w.weights) ? "weight" : "length"
+    n = max(0, path_length(x.longest_path, x.weights))
+    length_str = are_weighted(x.weights) ? "weight" : "length"
     println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of $(length_str) $(n).")
 end
 
@@ -239,17 +239,18 @@ function get_weights(weights::Nothing, is_cycle)
     return is_cycle ? UnweightedCycle() : UnweightedPath()
 end
 
-function get_weights(weights::Dict{Tuple{Int, Int}, Float64}, is_cycle)
+function get_weights(weights::Dict{Tuple{Int, Int}, <:Any}, is_cycle)
     return is_cycle ? weightedCycle(weights) : WeightedPath(weights)
 end
 
 # The main search function for both paths and cycles. At this point
 # cycle search is indicated by `first_vertex == last_vertex` and by
 # the type of `weights`.
-function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
+function _find_longest_path(graph, weights::AbstractWeightedPath{T},
+                            first_vertex, last_vertex;
                             initial_path = Int[],
-                            lower_bound = -1,
-                            upper_bound = nv(graph),
+                            lower_bound = T(-1),
+                            upper_bound = T(-1),
                             solver_mode = "ip",
                             cycle_constraint_mode = "cutset",
                             initial_cycle_constraints = 0,
@@ -278,6 +279,10 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
 
     if !(0 <= last_vertex <= nv(graph))
         error("The last vertex is outside the vertex range of the graph.")
+    end
+
+    if upper_bound < 0
+        upper_bound::T = trivial_upper_bound(graph, weights)
     end
 
     # TODO: Check that the provided `initial_path` really is a simple
@@ -318,7 +323,7 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
         end
     end
 
-    O, edges = OptProblem(graph, first_vertex, last_vertex)
+    O, edges = OptProblem(graph, weights, first_vertex, last_vertex)
     reverse_edges = Dict(edges[k] => k for k = 1:length(edges))
 
     best_path = initial_path
@@ -366,7 +371,10 @@ function _find_longest_path(graph, weights::T, first_vertex, last_vertex;
         end
 
         if weights isa AbstractWeightedPath{<:Integer}
-            upper_bound = min(upper_bound, floor(Int, round(objbound, digits = 3)))
+            upper_bound = min(upper_bound,
+                              floor(T, round(objbound, digits = 3)))
+        else
+            upper_bound = min(upper_bound, T(objbound))
         end
 
         main_path, cycles = extract_paths(graph, edges,
@@ -466,6 +474,30 @@ end
 path_length(path, weights::UnweightedPath) = length(path) - 1
 path_length(path, weights::UnweightedCycle) = length(path) - isempty(path)
 
+function path_length(path, weights::Dict{Tuple{Int, Int}, T}) where T
+    L = zero(T)
+    for k = 2:length(path)
+        L += weights[(path[k - 1], path[k])]
+    end
+    return L
+end
+
+function path_length(path, weights::WeightedPath{T}) where T
+    # An empty path vector means no solution and length is reported as -1.
+    isempty(path) && return T(-1)
+    return path_length(path, weights.weights)
+end
+
+function path_length(cycle, weights::WeightedCycle{T}) where T
+    # An empty cycle vector means no solution and length is reported as -1.
+    isempty(cycle) && return T(-1)
+    # There exist no cycles of length 1.
+    @assert length(cycle) != 1
+    # Weight of going back from the end to the beginning.
+    w = weights.weights[(cycle[end], cycle[1])]
+    return path_length(cycle, weights.weights) + w
+end
+
 function print_iteration_data(data)
     if data.log_level > 0
         @printf("%3d %5d ", data.iteration, round(Int, data.elapsed_time))
@@ -473,6 +505,15 @@ function print_iteration_data(data)
         println("$(data.num_constraints) $(data.solution.status) $(data.solution.objval) $(data.objbound)")
     end
     return true
+end
+
+function trivial_upper_bound(graph, weights)
+    if !are_weighted(weights)
+        return nv(graph)
+    else
+        w = sort(collect(values(weights.weights)), lt = >)
+        return sum(w[1:min(end, nv(graph))])
+    end
 end
 
 # Convert a path to the corresponding setting of binary edge variables.
@@ -498,7 +539,7 @@ end
 # l and u are lower and upper bounds on the variables, i.e. the edges.
 mutable struct OptProblem
     A::SparseMatrixCSC{Int64,Int64}
-    c::Vector{Int}
+    c::Vector{Float64}
     lb::Vector{Int}
     ub::Vector{Int}
     l::Vector{Int}
@@ -507,14 +548,13 @@ mutable struct OptProblem
     cycle_constraints::Vector{CycleConstraint}
 end
 
-function OptProblem(graph,
+function OptProblem(graph, weights,
                     first_vertex = 1,
                     last_vertex = 0)
     # N is number of vertices in graph problem.
     # M is number of edges.
     N = nv(graph)
     M = ne(graph)
-    c = ones(Int, M)
     A = spzeros(Int, 2 * N, M)
     lb = zeros(Int, 2 * N)
     ub = zeros(Int, 2 * N)
@@ -607,6 +647,12 @@ function OptProblem(graph,
                 lb[2 * first_vertex] = 0
             end
         end
+    end
+
+    if !are_weighted(weights)
+        c = ones(Float64, M)
+    else
+        c = Float64[weights.weights[e] for e in edge_variables]
     end
 
     return (OptProblem(A, c, lb, ub, l, u, vartypes, CycleConstraint[]),
