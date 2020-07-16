@@ -29,6 +29,9 @@ are_weighted(::UnweightedCycle) = false
 are_weighted(::WeightedPath) = true
 are_weighted(::WeightedCycle) = true
 
+are_integer_weights(::AbstractWeightedPath{<:Integer}) = true
+are_integer_weights(::Any) = false
+
 """
     LongestPathOrCycle
 
@@ -246,11 +249,11 @@ end
 # The main search function for both paths and cycles. At this point
 # cycle search is indicated by `first_vertex == last_vertex` and by
 # the type of `weights`.
-function _find_longest_path(graph, weights::AbstractWeightedPath{T},
+function _find_longest_path(graph, weights::AbstractWeightedPath,
                             first_vertex, last_vertex;
                             initial_path = Int[],
-                            lower_bound = T(-1),
-                            upper_bound = T(-1),
+                            lower_bound = -1,
+                            upper_bound = -1,
                             solver_mode = "ip",
                             cycle_constraint_mode = "cutset",
                             initial_cycle_constraints = 0,
@@ -261,7 +264,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath{T},
                             use_ip_warmstart = true,
                             log_level = 1,
                             new_longest_path_callback = x -> nothing,
-                            iteration_callback = print_iteration_data) where T
+                            iteration_callback = print_iteration_data)
     if !is_directed(graph)
         error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation.")
     end
@@ -282,7 +285,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath{T},
     end
 
     if upper_bound < 0
-        upper_bound::T = trivial_upper_bound(graph, weights)
+        upper_bound = trivial_upper_bound(graph, weights)
     end
 
     # TODO: Check that the provided `initial_path` really is a simple
@@ -346,7 +349,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath{T},
     cycles = Vector{Int}[]
     
     for iteration = 1:max_iterations
-        if weights isa AbstractWeightedPath{<:Integer}
+        if are_integer_weights(weights)
             max_gap = min(max_gap, upper_bound - lower_bound - 1)
         else
             max_gap = min(max_gap, 0.99 * (upper_bound - lower_bound))
@@ -370,11 +373,11 @@ function _find_longest_path(graph, weights::AbstractWeightedPath{T},
             objbound = solution.attrs[:objbound]
         end
 
-        if weights isa AbstractWeightedPath{<:Integer}
+        if are_integer_weights(weights)
             upper_bound = min(upper_bound,
-                              floor(T, round(objbound, digits = 3)))
+                              floor(Int, round(objbound, digits = 3)))
         else
-            upper_bound = min(upper_bound, T(objbound))
+            upper_bound = min(upper_bound, objbound)
         end
 
         main_path, cycles = extract_paths(graph, edges,
@@ -463,7 +466,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath{T},
     end
 
     return LongestPathOrCycle(weights,
-                              lower_bound, upper_bound,
+                              promote(lower_bound, upper_bound)...,
                               best_path,
                               Dict("O" => O, "edges" => edges,
                                    "last_path" => main_path,
@@ -474,23 +477,23 @@ end
 path_length(path, weights::UnweightedPath) = length(path) - 1
 path_length(path, weights::UnweightedCycle) = length(path) - isempty(path)
 
-function path_length(path, weights::Dict{Tuple{Int, Int}, T}) where T
-    L = zero(T)
+function path_length(path, weights::Dict{Tuple{Int, Int}, <:Any})
+    L = 0
     for k = 2:length(path)
         L += weights[(path[k - 1], path[k])]
     end
     return L
 end
 
-function path_length(path, weights::WeightedPath{T}) where T
+function path_length(path, weights::WeightedPath)
     # An empty path vector means no solution and length is reported as -1.
-    isempty(path) && return T(-1)
+    isempty(path) && return -1
     return path_length(path, weights.weights)
 end
 
-function path_length(cycle, weights::WeightedCycle{T}) where T
+function path_length(cycle, weights::WeightedCycle)
     # An empty cycle vector means no solution and length is reported as -1.
-    isempty(cycle) && return T(-1)
+    isempty(cycle) && return -1
     # There exist no cycles of length 1.
     @assert length(cycle) != 1
     # Weight of going back from the end to the beginning.
