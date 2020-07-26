@@ -8,7 +8,7 @@ The longest path problem is NP-hard, so the time needed to find the
 solution grows quickly with the size of the graph, unless it has some
 advantageous structure.
 
-At this time two functions are provided:
+At this time two search functions are provided:
 
     find_longest_path(graph, first_vertex = 1, last_vertex = 0; kwargs)
 
@@ -53,6 +53,21 @@ Longest path with bounds [352, 352] and a recorded path of length 352.
 ```
 For large problems you most likely want to add some restriction on how
 long the search can go on. See the doc string.
+
+## Weighted Longest Paths
+
+Edge-weighted longest path problems are supported. Example, continued
+from above:
+```
+julia> w = Dict((v1, v2) => mod1(v1 + v2, 2) for (v1, v2) in Tuple.(edges(g)));
+
+julia> find_longest_path(g, weights = w)
+  1     0 [349.0 539.0] 0.0 0 Optimal 539.0 539.0
+  2     0 [413.0 539.0] 0.0 54 Optimal 539.0 539.0
+  3     0 [457.0 539.0] 0.0 128 Optimal 539.0 539.0
+  4     0 [539.0 539.0] 0.0 139 Optimal 539.0 539.0
+Longest path with bounds [539.0, 539.0] and a recorded path of weight 539.
+```
 
 ## Theory
 
@@ -119,14 +134,11 @@ relaxation. That is also the default in the `longest_path` function.
 
 ## Future Plans
 
-* Generalize to weighted longest paths. This is mostly
-  straightforward.
-
 * Add more tests.
 
 * Add benchmarks.
 
-* Possibly convert from MathProgBase to MathOptInterface.
+* Convert from MathProgBase to MathOptInterface.
 
 * Generalize to other solvers than Cbc. This should be more or less
   straightforward, but is at the moment hindered by an absence of
