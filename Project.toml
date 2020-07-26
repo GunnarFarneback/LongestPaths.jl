@@ -1,7 +1,7 @@
 name = "LongestPaths"
 uuid = "3a25c17e-307c-411a-a047-890a9a5fbb4d"
 authors = ["Gunnar Farnebäck <gunnar@lysator.liu.se>"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 Cbc = "9961bab8-2fa3-5c5a-9d89-47fab24efd76"

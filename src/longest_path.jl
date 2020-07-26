@@ -1,4 +1,5 @@
-export LongestPathOrCycle, find_longest_path, find_longest_cycle, path_length
+export LongestPathOrCycle, find_longest_path, find_longest_cycle,
+       is_path, is_cycle, is_simple_path, is_simple_cycle
 
 using MathProgBase
 using MathProgBase.SolverInterface
@@ -49,9 +50,13 @@ end
 # TODO: Handle empty paths nicely.
 function Base.show(io::IO, x::LongestPathOrCycle)
     kind = are_cycle_weights(x.weights) ? "cycle" : "path"
-    n = max(0, path_length(x.longest_path, x.weights))
-    length_str = are_weighted(x.weights) ? "weight" : "length"
-    println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of $(length_str) $(n).")
+    if isempty(x.longest_path)
+        println(io, "Longest $(kind) problem without a feasible solution.")
+    else
+        n = path_length(x.longest_path, x.weights)
+        length_str = are_weighted(x.weights) ? "weight" : "length"
+        println(io, "Longest $(kind) with bounds [$(x.lower_bound), $(x.upper_bound)] and a recorded $(kind) of $(length_str) $(n).")
+    end
 end
 
 # General TODO: Check that self-loops are handled gracefully.
@@ -93,20 +98,24 @@ i.e. no repeated vertices are allowed.
 
 *Keyword arguments:*
 
-* `initial_path`: Search can be warmstarted by providing a valid path
-  as a vector of vertices. Default is an empty vector.
+* `weights`: Edge weights for weighted longest path searches. If
+  omitted all weights are implicitly one. Specified as a dictionary
+  mapping tuples to numbers. `(v1, v2) => w` means that the edge from
+  `v1` to `v2` has the weight `w`.
+
+* `initial_path`: Search can be warmstarted by providing a path as a
+  vector of vertices. If the provided vertices do not follow a valid
+  simple path, they are ignored.
 
 * `lower_bound`: User provided lower bound. Search will stop when the
   upper bound reaches `lower_bound`, even if no path of that length
-  has been found. Default is the number of edges in `initial_path`.
-  The provided `lower_bound` will be ignored if a stronger bound is
-  found during search.
+  has been found. The provided `lower_bound` will be ignored if a
+  stronger bound is found during search.
 
 * `upper_bound`: User provided upper bound. Search will stop when the
   lower bound reaches `upper_bound`, even if a longer path exists.
-  Default is the number of vertices in the graph. The provided
-  `upper_bound` will be ignored if a stronger bound is found during
-  search.
+  The provided `upper_bound` will be ignored if a stronger bound is
+  found during search.
 
 * `solver_mode`: Search can be made in three different modes, `"lp"`,
   `"ip"`, or `"lp+ip"`. In the default `"ip"` mode, integer programs
@@ -187,7 +196,8 @@ Notes:
 
 * Path lengths are reported by number of edges, not number of
   vertices. For cycles these are the same, for paths the number of
-  edges is one less than the number of vertices.
+  edges is one less than the number of vertices. For weighted searches
+  the length is the sum of the weights along the path.
 
 * If there is no outgoing edge from `first_vertex` in a path search
   going anywhere, the length is reported as 0 and the returned
@@ -195,8 +205,16 @@ Notes:
   also the case if `first_vertex == last_vertex`.
 
 * In other searches, if there exists no path or cycle matching the
-  specifications, the length is reported as -1 and the returned
+  specifications, the length is reported as 0 and the returned
   `longest_path` is empty.
+
+* In weighted searches, if the weights are of an `Integer` type, the
+  search knows that the optimum is an integer value and can round
+  bounds more aggressively.
+
+* Weights may be zero or negative. If all weights are non-positive the
+  problem effectively becomes a shortest path problem, which is fine
+  but can be solved considerably more efficiently with other methods.
 """
 
 "$(main_docstring)"
@@ -243,7 +261,7 @@ function get_weights(weights::Nothing, is_cycle)
 end
 
 function get_weights(weights::Dict{Tuple{Int, Int}, <:Any}, is_cycle)
-    return is_cycle ? weightedCycle(weights) : WeightedPath(weights)
+    return is_cycle ? WeightedCycle(weights) : WeightedPath(weights)
 end
 
 # The main search function for both paths and cycles. At this point
@@ -252,8 +270,8 @@ end
 function _find_longest_path(graph, weights::AbstractWeightedPath,
                             first_vertex, last_vertex;
                             initial_path = Int[],
-                            lower_bound = -1,
-                            upper_bound = -1,
+                            lower_bound = -Inf,
+                            upper_bound = Inf,
                             solver_mode = "ip",
                             cycle_constraint_mode = "cutset",
                             initial_cycle_constraints = 0,
@@ -284,53 +302,78 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
         error("The last vertex is outside the vertex range of the graph.")
     end
 
-    if upper_bound < 0
-        upper_bound = trivial_upper_bound(graph, weights)
-    end
+    check_if_weights_are_complete(graph, weights)
 
-    # TODO: Check that the provided `initial_path` really is a simple
-    # path or cycle at all.
+    # Possibly improve the provided upper bound with a trivial upper
+    # bound computed from the weights of the problem.
+    upper_bound = min(upper_bound, trivial_upper_bound(graph, weights))
 
-    if first_vertex != last_vertex != 0
-        path = get_path(graph, first_vertex, last_vertex)
-        if isempty(path)
-            path = Int[]
-            lb = ub = path_length(path, weights)
-            return LongestPathOrCycle(weights, lb, ub, path,
-                                      Dict{String, Any}())
-        elseif path_length(path, weights) > path_length(initial_path, weights)
-            new_longest_path_callback(path)
-            # Replacing `initial_path` is sort of misleading but the
-            # most convenient way to get it into `best_path` later.
-            initial_path = path
+    # Find a first solution and establish a lower bound from that.  If
+    # the user provided initial path is valid, use that. Otherwise
+    # find an arbitrary solution. If none can be found, abort the
+    # search and report that the problem is infeasible.
+    #
+    # This needs to be done differently for the different kinds of
+    # searches, so split it up in the different cases.
+
+    if first_vertex != last_vertex
+        # Path search.
+        if (isempty(initial_path)
+            || !is_simple_path(graph, initial_path)
+            || initial_path[1] != first_vertex
+            || (initial_path[end] != last_vertex
+                && last_vertex != 0))
+            # The provided initial path is not valid. Look for an
+            # arbitrary valid solution.
+            if last_vertex == 0
+                path = [first_vertex]
+            else
+                path = get_path(graph, first_vertex, last_vertex)
+            end
+            if isempty(path)
+                # Infeasible problem.
+                path = Int[]
+                lb = ub = path_length(path, weights)
+                return LongestPathOrCycle(weights, lb, ub, path,
+                                          Dict{String, Any}())
+            else
+                new_longest_path_callback(path)
+                initial_path = path
+            end
+        end
+    else
+        # Cycle search.
+        if (isempty(initial_path)
+            || !is_simple_cycle(graph, initial_path)
+            || (first_vertex ∉ initial_path && first_vertex != 0))
+            # The provided initial cycle is not valid. Look for an
+            # arbitrary valid solution.
+            if first_vertex == 0
+                cycle = get_cycle(graph)
+            else
+                cycle = get_cycle(graph, first_vertex)
+            end
+
+            if isempty(cycle)
+                # Infeasible problem.
+                path = Int[]
+                lb = ub = path_length(path, weights)
+                return LongestPathOrCycle(weights, lb, ub, path,
+                                          Dict{String, Any}())
+            else
+                new_longest_path_callback(cycle)
+                initial_path = cycle
+            end
         end
     end
 
-    if first_vertex == last_vertex
-        if first_vertex == 0
-            cycle = get_cycle(graph)
-        else
-            cycle = get_cycle(graph, first_vertex)
-        end
-
-        if isempty(cycle)
-            path = Int[]
-            lb = ub = path_length(path, weights)
-            return LongestPathOrCycle(weights, lb, ub, path,
-                                      Dict{String, Any}())
-        elseif path_length(cycle, weights) > path_length(initial_path, weights)
-            new_longest_path_callback(cycle)
-            # Replacing `initial_path` is sort of misleading but the
-            # most convenient way to get it into `best_path` later.
-            initial_path = cycle
-        end
-    end
+    # The initial path can now be trusted. Use it to possibly improve
+    # the lower bound.
+    best_path = initial_path
+    lower_bound = max(lower_bound, path_length(best_path, weights))
 
     O, edges = OptProblem(graph, weights, first_vertex, last_vertex)
     reverse_edges = Dict(edges[k] => k for k = 1:length(edges))
-
-    best_path = initial_path
-    lower_bound = max(lower_bound, path_length(best_path, weights))
 
     if initial_cycle_constraints > 1
         cycles = simplecycles_limited_length(graph, initial_cycle_constraints)
@@ -340,6 +383,15 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
         end
         constrain_cycles!(O, weights, cycles, edges, cycle_constraint_mode,
                           first_vertex, best_path)
+    end
+
+    # Due to a Cbc bug, ip warmstart cannot be used with negative weights.
+    # TODO: Report bug upstream and link the issue here.
+    if use_ip_warmstart && are_weighted(weights) && any(values(weights.weights) .< 0)
+        use_ip_warmstart = false
+        if log_level >= 1
+            println("Turning off use_ip_warmstart to work around a Cbc bug.")
+        end
     end
 
     solution = nothing
@@ -387,6 +439,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
 
         if first_vertex == last_vertex
             if first_vertex == 0
+                push!(cycles, main_path)
                 best_path = filter_out_longest_cycle!(best_path, weights,
                                                       cycles,
                                                       new_longest_path_callback)
@@ -436,7 +489,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
             # `constrain_cycles!` will filter out cycles through that
             # vertex.
             if first_vertex == last_vertex == 0
-                cutsets = filter(x -> path_length(x, weights) < path_length(best_path,weights), cutsets)
+                cutsets = filter(x -> path_length(x, weights) < path_length(best_path, weights), cutsets)
             end
 
             append!(cycles, cutsets)
@@ -474,8 +527,18 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                                    "last_solution" => solution))
 end
 
-path_length(path, weights::UnweightedPath) = length(path) - 1
-path_length(path, weights::UnweightedCycle) = length(path) - isempty(path)
+function check_if_weights_are_complete(graph, weights)
+    if are_weighted(weights)
+        for edge in edges(graph)
+            if !haskey(weights.weights, Tuple(edge))
+                error("Weights are provided but not specified for all edges.")
+            end
+        end
+    end
+end
+
+path_length(path, weights::UnweightedPath) = length(path) - !isempty(path)
+path_length(path, weights::UnweightedCycle) = length(path)
 
 function path_length(path, weights::Dict{Tuple{Int, Int}, <:Any})
     L = 0
@@ -486,19 +549,63 @@ function path_length(path, weights::Dict{Tuple{Int, Int}, <:Any})
 end
 
 function path_length(path, weights::WeightedPath)
-    # An empty path vector means no solution and length is reported as -1.
-    isempty(path) && return -1
+    # An empty path vector means no solution and length is reported as 0.
+    isempty(path) && return 0
     return path_length(path, weights.weights)
 end
 
 function path_length(cycle, weights::WeightedCycle)
-    # An empty cycle vector means no solution and length is reported as -1.
-    isempty(cycle) && return -1
+    # An empty cycle vector means no solution and length is reported as 0.
+    isempty(cycle) && return 0
     # There exist no cycles of length 1.
     @assert length(cycle) != 1
     # Weight of going back from the end to the beginning.
     w = weights.weights[(cycle[end], cycle[1])]
     return path_length(cycle, weights.weights) + w
+end
+
+"""
+    is_path(graph, path)
+
+Determine whether the vector of vertices `path` forms a path through
+`graph`.
+"""
+function is_path(graph, path)
+    e = edges(g)
+    return all((path[i-1], path[i]) ∈ e for i = 2:length(path))
+end
+
+"""
+    is_cycle(graph, path)
+
+Determine whether the vector of vertices `path` forms a cycle through
+`graph`, where the cycle is closed by an edge from the last vertex in
+`path` to the first vertex in `path`.
+"""
+function is_cycle(graph, path)
+    return is_path(graph, path) && (path[end], path[1]) ∈ graph
+end
+
+"""
+    is_simple_path(graph, path)
+
+Determine whether the vector of vertices `path` forms a simple path
+through `graph`.
+"""
+function is_simple_path(graph, path)
+    length(unique(path)) == length(path) || return false
+    return is_path(graph, path)
+end
+
+"""
+    is_simple_cycle(graph, path)
+
+Determine whether the vector of vertices `path` forms a simple cycle
+through `graph`, where the cycle is closed by an edge from the last
+vertex in `path` to the first vertex in `path`.
+"""
+function is_simple_cycle(graph, path)
+    return is_simple_path(graph, path) && (path[end], path[1]) ∈ graph
 end
 
 function print_iteration_data(data)
@@ -515,7 +622,7 @@ function trivial_upper_bound(graph, weights)
         return nv(graph)
     else
         w = sort(collect(values(weights.weights)), lt = >)
-        return sum(w[1:min(end, nv(graph))])
+        return sum(max.(0, w[1:min(end, nv(graph))]))
     end
 end
 
@@ -558,9 +665,13 @@ function OptProblem(graph, weights,
     # M is number of edges.
     N = nv(graph)
     M = ne(graph)
-    A = spzeros(Int, 2 * N, M)
-    lb = zeros(Int, 2 * N)
-    ub = zeros(Int, 2 * N)
+    # Weighted search for a cycle anywhere needs an extra
+    # constraint. See the comment where `N₀` is used.
+    N₀ = (first_vertex == last_vertex == 0) && are_weighted(weights)
+
+    A = spzeros(Int, 2 * N + N₀, M)
+    lb = zeros(Int, 2 * N + N₀)
+    ub = zeros(Int, 2 * N + N₀)
     l = zeros(Int, M)
     u = ones(Int, M)
     vartypes = fill(:Bin, M)
@@ -650,6 +761,20 @@ function OptProblem(graph, weights,
                 lb[2 * first_vertex] = 0
             end
         end
+    end
+
+    # When searching for a cycle anywhere, the constraints so far
+    # allow the trivial all-zero solution, corresponding to an invalid
+    # no-vertex cycle. This is usually not a problem since it would be
+    # a very short cycle, but if the problem is weighted with negative
+    # weights, it would yield a false solution. To overcome this, add
+    # the constraint that the sum of all edges is at least one. This
+    # is only needed when the optimal solution is negative but always
+    # valid, so add it for weighted problems regardless of weights.
+    if N₀
+        A[2 * N + N₀, :] .= 1
+        lb[2 * N + N₀] = 1
+        ub[2 * N + N₀] = M
     end
 
     if !are_weighted(weights)
@@ -856,7 +981,10 @@ function filter_out_longest_cycle!(best_path, weights,
     # Find one of the longest cycles in cycles.
     i = findlast(cycle_lengths .== longest_cycle)
     cycle = cycles[i]
-    cycles = deleteat!(cycles, i)
+
+    # The former best path is now just a cycle among the others and a
+    # candidate for a constraint.
+    cycles[i] = best_path
 
     # Replace the current best cycle with the new cycle (by returning it).
     if path_length(cycle, weights) > path_length(best_path, weights)
