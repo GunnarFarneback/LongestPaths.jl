@@ -59,8 +59,6 @@ function Base.show(io::IO, x::LongestPathOrCycle)
     end
 end
 
-# General TODO: Check that self-loops are handled gracefully.
-
 main_docstring = """
     find_longest_path(graph, first_vertex = 1, last_vertex = 0)
 
@@ -179,6 +177,19 @@ i.e. no repeated vertices are allowed.
   specifications. Return `true` to continue search and `false` to stop
   search. The default is the `print_iteration_data` function.
 
+* `preprocess`: Whether to preprocess the graph before starting
+  the search. Defaults to true. This performs the following steps:
+  1. Convert undirected graphs to directed graphs.
+  2. Remove self-loops.
+  3. Remove vertices and edges which can provably not be part of an
+     optimal solution.
+  The main reasons to disable this are to save time and/or memory if
+  you know that the preprocessing will not be helpful or if you plan
+  to make advanced use of `iteration_callback` and need the
+  information to apply to the original graph. Likewise the internals
+  of the returned result will relate to the preprocessed graph if
+  `preprocess` is enabled.
+
 The return value is of the `LongestPathOrCycle` type and contains the
 following fields:
 
@@ -246,14 +257,14 @@ function find_longest_path(graph, first_vertex::Integer = 1,
         return LongestPathOrCycle(w, lb, ub, path, Dict{String, Any}())
     end
 
-    return _find_longest_path(graph, w, first_vertex, last_vertex; kwargs...)
+    return _pre_find_longest_path(graph, w, first_vertex, last_vertex; kwargs...)
 end
 
 "$(main_docstring)"
 function find_longest_cycle(graph, first_vertex = 0;
                             weights = nothing, kwargs...)
     w = get_weights(weights, true)
-    return _find_longest_path(graph, w, first_vertex, first_vertex; kwargs...)
+    return _pre_find_longest_path(graph, w, first_vertex, first_vertex; kwargs...)
 end
 
 function get_weights(weights::Nothing, is_cycle)
@@ -263,6 +274,171 @@ end
 function get_weights(weights::Dict{Tuple{Int, Int}, <:Any}, is_cycle)
     return is_cycle ? WeightedCycle(weights) : WeightedPath(weights)
 end
+
+# Intermediate landing point to possibly perform preprocessing of the
+# graph before continuing to the main search function.
+#
+# 1. Convert an undirected graph to a directed graph.
+# 2. Remove self loops if any.
+# 3. Remove unneeded vertices.
+#   a) If search for path ending anywhere:
+#      Only keep vertices which can be reached by a path from the
+#      first vertex.
+#   b) If search for path ending in a specific vertex:
+#      Only keep vertices which can be reached by a path from the
+#      first vertex and reach the last vertex by a path.
+#   c) If searching for a loop through a given vertex:
+#      Only keep the strongly connected component containing this
+#      vertex.
+#   d) If searching for a loop anywhere:
+#      Remove strongly connected components of size one.
+#      TODO: This case can be improved further by running separate
+#      searches for each strongly connected component, preferably with
+#      good ordering heuristics so some searches can be skipped
+#      entirely.
+function _pre_find_longest_path(graph, weights::AbstractWeightedPath,
+                                first_vertex, last_vertex;
+                                initial_path = Int[],
+                                preprocess = true,
+                                kwargs...)
+    original_graph = true
+    vertex_mapping = 1:nv(graph)
+    mapped_weights = weights
+    if preprocess
+        # 1. Convert to directed graph if it isn't already.
+        if !is_directed(graph)
+            # TODO: Support also this case. Duplicate the weights to
+            # both directions.
+            if are_weighted(weights)
+                error("Weighted undirected graphs are not supported at this time. Convert your undirected graph to a directed representation.")
+            end
+            graph = SimpleDiGraph(graph)
+            original_graph = false
+        end
+        # 2. Remove self loops if there are any.
+        if has_self_loops(graph)
+            if original_graph
+                graph = copy(graph)
+                original_graph = false
+            end
+            for v in vertices(graph)
+                if has_edge(graph, v, v)
+                    rem_edge!(graph, v, v)
+                end
+            end
+        end
+        # 3. Remove unneeded vertices.
+        needed_vertices = find_necessary_vertices(graph, first_vertex,
+                                                  last_vertex)
+        first_vertex == 0 || @assert first_vertex in needed_vertices
+        last_vertex == 0 || @assert last_vertex in needed_vertices
+        if length(needed_vertices) < nv(graph)
+            graph, vertex_mapping = induced_subgraph(graph, needed_vertices)
+            reverse_vertex_mapping = Dict(vertex_mapping[v] => v
+                                          for v in eachindex(vertex_mapping))
+            if !issubset(initial_path, needed_vertices)
+                # Initial path was invalid. Skip it.
+                initial_path = []
+            else
+                # Renumber vertices in initial_path.
+                initial_path = [reverse_vertex_mapping[v] for v in initial_path]
+            end
+            mapped_weights = map_weight_vertices(weights, reverse_vertex_mapping)
+            if first_vertex != 0
+                first_vertex = reverse_vertex_mapping[first_vertex]
+            end
+            if last_vertex != 0
+                last_vertex = reverse_vertex_mapping[last_vertex]
+            end
+        end
+    else
+        if !is_directed(graph)
+            error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation or enable the preprocess option.")
+        end
+        if has_self_loops(graph)
+            error("Self loops are not supported. Remove your self loops or enable the preprocess option.")
+        end
+    end
+    result = _find_longest_path(graph, mapped_weights,
+                                first_vertex, last_vertex;
+                                initial_path = initial_path, kwargs...)
+
+    # Map back vertices of the best found path. Note: no mapping is
+    # done of the internals of the result.
+    result.longest_path = vertex_mapping[result.longest_path]
+    result.weights = weights
+    return result
+end
+
+# See comments for _pre_find_longest_path.
+function find_necessary_vertices(graph, first_vertex, last_vertex)
+    if first_vertex != last_vertex
+        # Path
+        vertices = find_reachable_vertices(v -> outneighbors(graph, v),
+                                           first_vertex)
+        if last_vertex != 0
+            vertices2 = find_reachable_vertices(v -> inneighbors(graph, v),
+                                                last_vertex)
+            vertices = intersect(vertices, vertices2)
+            # If there's no connection from first_vertex to
+            # last_vertex we had an empty intersection. The
+            # infeasibility will be redetected later, but at this
+            # point we need to keep the first and last vertex.
+            if isempty(vertices)
+                vertices = [first_vertex, last_vertex]
+            end
+        end
+    else
+        # Cycle
+        components = strongly_connected_components(graph)
+        if first_vertex != 0
+            vertices = only(filter(c -> first_vertex in c, components))
+        else
+            if maximum(length.(components)) == 1
+                vertices = first(components)
+            else
+                vertices = reduce(vcat, filter(c -> length(c) > 1, components))
+            end
+        end
+    end
+    return sort(vertices)
+end
+
+function find_reachable_vertices(f, first_vertex)
+    queue = [first_vertex]
+    vertices = empty(queue)
+    while !isempty(queue)
+        v = popfirst!(queue)
+        if v ∉ vertices
+            push!(vertices, v)
+            append!(queue, f(v))
+        end
+    end
+    return vertices
+end
+
+map_weight_vertices(w::UnweightedPath, mapping) = w
+map_weight_vertices(w::UnweightedCycle, mapping) = w
+
+function map_weight_vertices(w::WeightedPath, mapping)
+    w2 = deepcopy(w)
+    map_weight_vertices!(w2.weights, w.weights, mapping)
+    return w2
+end
+
+function map_weight_vertices(w::WeightedCycle, mapping)
+    w2 = deepcopy(w)
+    map_weight_vertices!(w2.weights, w.weights, mapping)
+    return w2
+end
+
+function map_weight_vertices!(new_weights::Dict, old_weights::Dict, mapping)
+    empty!(new_weights)
+    for (k, v) in old_weights
+        new_weights[(mapping[k[1]], mapping[k[2]])] = v
+    end
+end
+
 
 # The main search function for both paths and cycles. At this point
 # cycle search is indicated by `first_vertex == last_vertex` and by
@@ -283,10 +459,6 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                             log_level = 1,
                             new_longest_path_callback = x -> nothing,
                             iteration_callback = print_iteration_data)
-    if !is_directed(graph)
-        error("Only directed graphs are supported for now. Convert your undirected graph to a directed representation.")
-    end
-
     @assert xor(first_vertex == last_vertex, !are_cycle_weights(weights))
     # TODO: Convert these to proper validation of user input.
     @assert(solver_mode ∈ ["lp", "lp+ip", "ip"],
