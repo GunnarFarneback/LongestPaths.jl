@@ -392,7 +392,11 @@ function find_necessary_vertices(graph, first_vertex, last_vertex)
         # Cycle
         components = strongly_connected_components(graph)
         if first_vertex != 0
-            vertices = only(filter(c -> first_vertex in c, components))
+            # Can be shortened with `only` once support for Julia < 1.4
+            # is dropped.
+            matching_components = filter(c -> first_vertex in c, components)
+            @assert length(matching_components) == 1
+            vertices = first(matching_components)
         else
             if maximum(length.(components)) == 1
                 vertices = first(components)
