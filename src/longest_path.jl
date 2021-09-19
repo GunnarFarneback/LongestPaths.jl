@@ -183,12 +183,12 @@ i.e. no repeated vertices are allowed.
   2. Remove self-loops.
   3. Remove vertices and edges which can provably not be part of an
      optimal solution.
-  The main reasons to disable this are to save time and/or memory if
-  you know that the preprocessing will not be helpful or if you plan
-  to make advanced use of `iteration_callback` and need the
-  information to apply to the original graph. Likewise the internals
-  of the returned result will relate to the preprocessed graph if
-  `preprocess` is enabled.
+  The main reason to disable this are to save time and/or memory if
+  you know that the preprocessing will not be helpful. The
+  `iteration_callback` and the internals of the returned result will
+  relate to the preprocessed graph if `preprocess` is enabled, but
+  vertices can be mapped back to the original graph via the provided
+  `vertex_mapping`.
 
 The return value is of the `LongestPathOrCycle` type and contains the
 following fields:
@@ -360,7 +360,7 @@ function _pre_find_longest_path(graph, weights::AbstractWeightedPath,
         end
     end
     result = _find_longest_path(graph, mapped_weights,
-                                first_vertex, last_vertex;
+                                first_vertex, last_vertex, vertex_mapping;
                                 initial_path = initial_path, kwargs...)
 
     # Map back vertices of the best found path. Note: no mapping is
@@ -444,7 +444,7 @@ end
 # cycle search is indicated by `first_vertex == last_vertex` and by
 # the type of `weights`.
 function _find_longest_path(graph, weights::AbstractWeightedPath,
-                            first_vertex, last_vertex;
+                            first_vertex, last_vertex, vertex_mapping;
                             initial_path = Int[],
                             lower_bound = -Inf,
                             upper_bound = Inf,
@@ -509,7 +509,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                 return LongestPathOrCycle(weights, lb, ub, path,
                                           Dict{String, Any}())
             else
-                new_longest_path_callback(path)
+                new_longest_path_callback(vertex_mapping[path])
                 initial_path = path
             end
         end
@@ -533,7 +533,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                 return LongestPathOrCycle(weights, lb, ub, path,
                                           Dict{String, Any}())
             else
-                new_longest_path_callback(cycle)
+                new_longest_path_callback(vertex_mapping[cycle])
                 initial_path = cycle
             end
         end
@@ -551,7 +551,8 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
         cycles = simplecycles_limited_length(graph, initial_cycle_constraints)
         if first_vertex == last_vertex == 0
             best_path = filter_out_longest_cycle!(best_path, weights, cycles,
-                                                  new_longest_path_callback)
+                                                  new_longest_path_callback,
+                                                  vertex_mapping)
         end
         constrain_cycles!(O, weights, cycles, edges, cycle_constraint_mode,
                           first_vertex, best_path)
@@ -614,7 +615,8 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                 push!(cycles, main_path)
                 best_path = filter_out_longest_cycle!(best_path, weights,
                                                       cycles,
-                                                      new_longest_path_callback)
+                                                      new_longest_path_callback,
+                                                      vertex_mapping)
             end
             lower_bound = max(lower_bound, path_length(best_path, weights))
         end
@@ -622,7 +624,7 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
         lower_bound = max(lower_bound, path_length(main_path, weights))
         if path_length(main_path, weights) > path_length(best_path, weights)
             best_path = main_path
-            new_longest_path_callback(best_path)
+            new_longest_path_callback(vertex_mapping[best_path])
         end
 
         iteration_data = (log_level = log_level,
@@ -637,7 +639,8 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                           objbound = objbound,
                           best_path = best_path,
                           main_path = main_path,
-                          cycles = cycles)
+                          cycles = cycles,
+                          vertex_mapping = vertex_mapping)
 
         if !iteration_callback(iteration_data)
             break
@@ -696,7 +699,8 @@ function _find_longest_path(graph, weights::AbstractWeightedPath,
                               Dict("O" => O, "edges" => edges,
                                    "last_path" => main_path,
                                    "last_cycles" => cycles,
-                                   "last_solution" => solution))
+                                   "last_solution" => solution,
+                                   "vertex_mapping" => vertex_mapping))
 end
 
 function check_if_weights_are_complete(graph, weights)
@@ -1136,7 +1140,8 @@ end
 # cycle of the same length as the previous best and filter that one
 # out, which is trivial.
 function filter_out_longest_cycle!(best_path, weights,
-                                   cycles, new_longest_path_callback)
+                                   cycles, new_longest_path_callback,
+                                   vertex_mapping)
     if isempty(cycles)
         return best_path
     end
@@ -1160,7 +1165,7 @@ function filter_out_longest_cycle!(best_path, weights,
 
     # Replace the current best cycle with the new cycle (by returning it).
     if path_length(cycle, weights) > path_length(best_path, weights)
-        new_longest_path_callback(best_path)
+        new_longest_path_callback(vertex_mapping[best_path])
     end
     return cycle
 end
