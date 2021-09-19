@@ -386,4 +386,51 @@ end
             end
         end
     end
+
+    @testset "unweighted with self-loops" begin
+        w = LongestPaths.UnweightedPath()
+        longest_paths = dfs_longest_path.((g,), (w,), 1:8, permutedims(1:8))
+        g2 = copy(g)
+        for v in vertices(g2)
+            add_edge!(g2, v, v)
+        end
+        @test_throws ErrorException find_longest_path(g2, preprocess = false)
+        @test test_longest_path(g2, 0, 0, maximum(length.(all_cycles)))
+        for i = 1:8
+            for j = 0:8
+                if i == j
+                    n = maximum(length.(filter(x -> i in x, all_cycles)))
+                else
+                    if j == 0
+                        n = maximum(length.(longest_paths[i, :])) - 1
+                    else
+                        n = length(longest_paths[i, j]) - 1
+                    end
+                end
+                @test test_longest_path(g2, i, j, n)
+            end
+        end
+    end
+
+    @testset "unweighted undirected" begin
+        w = LongestPaths.UnweightedPath()
+        longest_paths = dfs_longest_path.((g,), (w,), 1:8, permutedims(1:8))
+        g2 = smallgraph(:sedgewickmaze)
+        @test_throws ErrorException find_longest_path(g2, preprocess = false)
+        @test test_longest_path(g2, 0, 0, maximum(length.(all_cycles)))
+        for i = 1:8
+            for j = 0:8
+                if i == j
+                    n = maximum(length.(filter(x -> i in x, all_cycles)))
+                else
+                    if j == 0
+                        n = maximum(length.(longest_paths[i, :])) - 1
+                    else
+                        n = length(longest_paths[i, j]) - 1
+                    end
+                end
+                @test test_longest_path(g2, i, j, n)
+            end
+        end
+    end
 end
