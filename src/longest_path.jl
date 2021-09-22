@@ -30,6 +30,13 @@ are_weighted(::UnweightedCycle) = false
 are_weighted(::WeightedPath) = true
 are_weighted(::WeightedCycle) = true
 
+# Turn unweighted weights into explicit weights with value 1.
+explicit_weights(w::WeightedPath, graph) = w
+explicit_weights(w::WeightedCycle, graph) = w
+explicit_weights(w::UnweightedPath, graph) = WeightedPath(unit_weights(graph))
+explicit_weights(w::UnweightedCycle, graph) = WeightedCycle(unit_weights(graph))
+unit_weights(graph) = Dict(Tuple(edge) => 1 for edge in edges(graph))
+
 are_integer_weights(::AbstractWeightedPath{<:Integer}) = true
 are_integer_weights(::Any) = false
 
@@ -39,10 +46,10 @@ are_integer_weights(::Any) = false
 Type used for the return values of `longest_path`. See the function
 documentation for more information.
 """
-mutable struct LongestPathOrCycle{T <: AbstractWeightedPath, S}
-    weights::T
-    lower_bound::S
-    upper_bound::S
+mutable struct LongestPathOrCycle{T}
+    weights::AbstractWeightedPath
+    lower_bound::T
+    upper_bound::T
     longest_path::Vector{Int}
     internals::Dict{String, Any}
 end
@@ -190,6 +197,11 @@ i.e. no repeated vertices are allowed.
   vertices can be mapped back to the original graph via the provided
   `vertex_mapping`.
 
+* `reduce_unbranched`: Whether to optimize the graph such that
+  vertices with two neighbors are eliminated where possible. Defaults
+  to false. This turns unweighted searches into weighted searches. The
+  same caveats with respect to introspection as `preprocess` apply.
+
 The return value is of the `LongestPathOrCycle` type and contains the
 following fields:
 
@@ -296,12 +308,18 @@ end
 #      searches for each strongly connected component, preferably with
 #      good ordering heuristics so some searches can be skipped
 #      entirely.
+# 4. Reduce unbranched sequences of edges to one edge weighted as the
+#    sum of the weights of the removed edges.
+#
+# 1-3 are applied if `preprocess` is true and 4 if `reduce_unbranched`
+# is true.
 function _pre_find_longest_path(graph, weights::AbstractWeightedPath,
                                 first_vertex, last_vertex;
                                 initial_path = Int[],
                                 preprocess = true,
+                                reduce_unbranched = false,
                                 kwargs...)
-    original_graph = true
+    input_graph = graph
     vertex_mapping = 1:nv(graph)
     mapped_weights = weights
     if preprocess
@@ -313,13 +331,11 @@ function _pre_find_longest_path(graph, weights::AbstractWeightedPath,
                 error("Weighted undirected graphs are not supported at this time. Convert your undirected graph to a directed representation.")
             end
             graph = SimpleDiGraph(graph)
-            original_graph = false
         end
         # 2. Remove self loops if there are any.
         if has_self_loops(graph)
-            if original_graph
+            if graph === input_graph
                 graph = copy(graph)
-                original_graph = false
             end
             for v in vertices(graph)
                 if has_edge(graph, v, v)
@@ -359,15 +375,51 @@ function _pre_find_longest_path(graph, weights::AbstractWeightedPath,
             error("Self loops are not supported. Remove your self loops or enable the preprocess option.")
         end
     end
+
+    if reduce_unbranched
+        if graph === input_graph
+            graph = copy(graph)
+        end
+        if mapped_weights === weights && are_weighted(mapped_weights)
+            mapped_weights = deepcopy(mapped_weights)
+        end
+        graph, mapped_weights, vertex_mapping2, edge_mapping,
+        first_vertex, last_vertex =
+            reduce_unbranched_vertices!(graph, explicit_weights(mapped_weights,
+                                                                graph),
+                                        first_vertex, last_vertex)
+
+        edge_mapping = map_edge_mapping(edge_mapping, vertex_mapping)
+        vertex_mapping = vertex_mapping[vertex_mapping2]
+    else
+        edge_mapping = Dict{Tuple{Int, Int}, Vector{Int}}()
+    end
+
     result = _find_longest_path(graph, mapped_weights,
                                 first_vertex, last_vertex, vertex_mapping;
                                 initial_path = initial_path, kwargs...)
 
     # Map back vertices of the best found path. Note: no mapping is
     # done of the internals of the result.
-    result.longest_path = vertex_mapping[result.longest_path]
+    result.longest_path = apply_mappings_to_path(result.longest_path,
+                                                 vertex_mapping,
+                                                 edge_mapping)
     result.weights = weights
     return result
+end
+
+function apply_mappings_to_path(path, vertex_mapping, edge_mapping)
+    path = vertex_mapping[path]
+    if isempty(edge_mapping)
+        return path
+    end
+    for i = length(path):-1:2
+        extra_vertices = get(edge_mapping, (path[i - 1], path[i]), Int[])
+        if !isempty(extra_vertices)
+            path = vcat(path[1:(i - 1)], extra_vertices, path[i:end])
+        end
+    end
+    return path
 end
 
 # See comments for _pre_find_longest_path.
@@ -421,6 +473,80 @@ function find_reachable_vertices(f, first_vertex)
     return vertices
 end
 
+function reduce_unbranched_vertices!(graph, weights, first_vertex, last_vertex)
+    edge_mapping = Dict{Tuple{Int, Int}, Vector{Int}}()
+    keep_searching = true
+    while keep_searching
+        keep_searching = false
+        for v in vertices(graph)
+            v == first_vertex && continue
+            v == last_vertex && continue
+            i = inneighbors(graph, v)
+            o = outneighbors(graph, v)
+            isempty(i) && continue
+            length(i) > 2 && continue
+            isempty(o) && continue
+            length(o) > 2 && continue
+            length(union(i, o)) == 2 || continue
+            for u in i
+                w = first(o)
+                if w == u
+                    if length(o) == 1
+                        continue
+                    end
+                    w = last(o)
+                end
+                if first_vertex > 0 && last_vertex == 0
+                    if w == first_vertex || length(inneighbors(graph, w)) > 1
+                        continue
+                    end
+                end
+
+                # Reduce `u -> v -> w` to `u -> w`.
+
+                # There might already be a an edge directly from u -> w
+                # but that's fine. Just update the weight if the
+                # reduced weight is higher.
+                reduced_weight = weights.weights[(u, v)] + weights.weights[(v, w)]
+                if haskey(weights.weights, (u, w))
+                    weights.weights[(u, w)] = max(weights.weights[(u, w)],
+                                                 reduced_weight)
+                else
+                    weights.weights[(u, w)] = reduced_weight
+                end
+
+                rem_edge!(graph, u, v)
+                rem_edge!(graph, v, w)
+                delete!(weights.weights, (u, v))
+                delete!(weights.weights, (v, w))
+                add_edge!(graph, u, w)
+                edge_mapping[(u, w)] = vcat(get(edge_mapping, (u, v), Int[]),
+                                            v,
+                                            get(edge_mapping, (v, w), Int[]))
+                delete!(edge_mapping, (u, v))
+                delete!(edge_mapping, (v, w))
+                keep_searching = true
+            end
+        end
+    end
+
+    remaining_vertices = filter(v -> (degree(graph, v) > 0 ||
+                                      v == first_vertex ||
+                                      v == last_vertex),
+                                vertices(graph))
+    graph, vertex_mapping = induced_subgraph(graph, remaining_vertices)
+    forward_mapping = Dict(j => i for (i, j) in enumerate(vertex_mapping))
+    weights = map_weight_vertices(weights, forward_mapping)
+    if first_vertex != 0
+        first_vertex = forward_mapping[first_vertex]
+    end
+    if last_vertex != 0
+        last_vertex = forward_mapping[last_vertex]
+    end
+
+    return graph, weights, vertex_mapping, edge_mapping, first_vertex, last_vertex
+end
+
 map_weight_vertices(w::UnweightedPath, mapping) = w
 map_weight_vertices(w::UnweightedCycle, mapping) = w
 
@@ -443,6 +569,14 @@ function map_weight_vertices!(new_weights::Dict, old_weights::Dict, mapping)
     end
 end
 
+function map_edge_mapping(edge_mapping, vertex_mapping)
+    out_edge_mapping = empty(edge_mapping)
+    for (k, v) in edge_mapping
+        out_edge_mapping[(vertex_mapping[k[1]],
+                          vertex_mapping[k[2]])] = vertex_mapping[v]
+    end
+    return out_edge_mapping
+end
 
 # The main search function for both paths and cycles. At this point
 # cycle search is indicated by `first_vertex == last_vertex` and by
