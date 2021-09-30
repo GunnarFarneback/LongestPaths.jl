@@ -434,3 +434,49 @@ end
         end
     end
 end
+
+@testset "karate" begin
+    gu = smallgraph(:karate)
+    g = DiGraph(gu)
+    w = Dict((v1, v2) => (mod(v1, 2) + mod(v2, 3) + mod(v1 * v2, 5))
+             for (v1, v2) in Tuple.(edges(g)))
+
+    r = find_longest_path(g, 10, use_ip_warmstart = true, log_level = 0,
+                          reduce_unbranched = true)
+    @test r.lower_bound == r.upper_bound == 24 == length(r.longest_path) - 1
+
+    r = find_longest_path(g, 10, 20, use_ip_warmstart = true, log_level = 0,
+                          reduce_unbranched = true)
+    @test r.lower_bound == r.upper_bound == 20 == length(r.longest_path) - 1
+
+    r = find_longest_path(g, 10, use_ip_warmstart = true, log_level = 0,
+                          reduce_unbranched = true, weights = w)
+    @test r.lower_bound == r.upper_bound == 84
+
+    r = find_longest_path(g, 10, 20, use_ip_warmstart = true, log_level = 0,
+                          reduce_unbranched = true, weights = w)
+
+    @test r.lower_bound == r.upper_bound == 70
+
+    r = find_longest_cycle(g, use_ip_warmstart = true, log_level = 0,
+                           reduce_unbranched = true)
+    @test r.lower_bound == r.upper_bound == 20 == length(r.longest_path)
+
+    r = find_longest_cycle(g, 10, use_ip_warmstart = true, log_level = 0,
+                           reduce_unbranched = true)
+    @test r.lower_bound == r.upper_bound == 19 == length(r.longest_path)
+
+    r = find_longest_cycle(g, use_ip_warmstart = true, log_level = 0,
+                           reduce_unbranched = true, weights = w)
+    @test r.lower_bound == r.upper_bound == 76
+
+    r = find_longest_cycle(g, 10, use_ip_warmstart = true, log_level = 0,
+                           reduce_unbranched = true, weights = w)
+    @test r.lower_bound == r.upper_bound == 64
+
+    # Weighted undirected graphs are not (yet) supported.
+    @test_throws ErrorException find_longest_path(gu, 10, log_level = 0,
+                                                  weights = w)
+    @test_throws ErrorException find_longest_cycle(gu, 10, log_level = 0,
+                                                   weights = w)
+end

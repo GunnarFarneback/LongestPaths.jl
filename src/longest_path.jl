@@ -473,6 +473,9 @@ function find_reachable_vertices(f, first_vertex)
     return vertices
 end
 
+# TODO: With the exception of longest path ending anywhere, this kind
+# of reduction can be done more aggressively to any vertex with a
+# single ingoing or outgoing edge.
 function reduce_unbranched_vertices!(graph, weights, first_vertex, last_vertex)
     edge_mapping = Dict{Tuple{Int, Int}, Vector{Int}}()
     keep_searching = true
