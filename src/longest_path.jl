@@ -1104,6 +1104,13 @@ function OptProblem(graph, weights,
             edge_variables)
 end
 
+mutable struct Solution
+    status
+    objval
+    sol
+    attrs
+end
+
 function solve_LP(O::OptProblem; kw...)
     model = LinearQuadraticModel(ClpSolver(;kw...))
     A, lb, ub = add_cycle_constraints_to_formulation(O)
@@ -1113,7 +1120,8 @@ function solve_LP(O::OptProblem; kw...)
     attrs[:redcost] = getreducedcosts(model)
     attrs[:lambda] = getconstrduals(model)
     attrs[:solver] = :lp
-    solution = MathProgBase.HighLevelInterface.LinprogSolution(status(model), getobjval(model), getsolution(model), attrs)
+    solution = Solution(status(model), getobjval(model),
+                        getsolution(model), attrs)
 end
 
 function solve_IP(O::OptProblem, initial_solution = Int[],
@@ -1131,7 +1139,8 @@ function solve_IP(O::OptProblem, initial_solution = Int[],
     attrs = Dict()
     attrs[:objbound] = getobjbound(model)
     attrs[:solver] = :ip
-    solution = MathProgBase.HighLevelInterface.MixintprogSolution(status(model), getobjval(model), getsolution(model), attrs)
+    solution = Solution(status(model), getobjval(model),
+                        getsolution(model), attrs)
     return solution
 end
 
