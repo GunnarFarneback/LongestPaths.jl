@@ -1,10 +1,8 @@
 export LongestPathOrCycle, find_longest_path, find_longest_cycle,
        is_path, is_cycle, is_simple_path, is_simple_cycle
 
-using MathProgBase
-using MathProgBase.SolverInterface
-using Clp
-using Cbc
+import Clp
+import Cbc
 using LightGraphs
 using SparseArrays
 using Printf
@@ -1111,37 +1109,76 @@ mutable struct Solution
     attrs
 end
 
-function solve_LP(O::OptProblem; kw...)
-    model = LinearQuadraticModel(ClpSolver(;kw...))
+function solve_LP(O::OptProblem)
+    model = Clp.ClpModel()
+    solve = Clp.ClpSolve()
+    Clp.set_log_level(model, 0)
     A, lb, ub = add_cycle_constraints_to_formulation(O)
-    loadproblem!(model, A, O.l, O.u, O.c, lb, ub, :Max)
-    optimize!(model)
+    Clp.load_problem(model, A, O.l, O.u, O.c, lb, ub)
+    Clp.set_obj_sense(model, -1.0) # Maximize.
+    Clp.initial_solve_with_options(model, solve)
     attrs = Dict()
-    attrs[:redcost] = getreducedcosts(model)
-    attrs[:lambda] = getconstrduals(model)
+    attrs[:redcost] = Clp.dual_column_solution(model)
+    attrs[:lambda] = Clp.dual_row_solution(model)
     attrs[:solver] = :lp
-    solution = Solution(status(model), getobjval(model),
-                        getsolution(model), attrs)
+    solution = Solution(clp_status(model), Clp.objective_value(model),
+                        Clp.primal_column_solution(model), attrs)
+end
+
+function clp_status(model)
+    return get(Dict(0 => :Optimal,
+                    1 => :Infeasible,
+                    2 => :Unbounded,
+                    3 => :UserLimit,
+                    4 => :Error),
+               Clp.status(model), :InternalError)
 end
 
 function solve_IP(O::OptProblem, initial_solution = Int[],
-                  use_warmstart = true; kw...)
-    model = LinearQuadraticModel(CbcSolver(;kw...))
-    A, lb, ub = add_cycle_constraints_to_formulation(O)
-    loadproblem!(model, A, O.l, O.u, O.c, lb, ub, :Max)
-    setvartype!(model, O.vartypes)
-    original_stdout = stdout
-    if !isempty(initial_solution) && use_warmstart
-        setwarmstart!(model, initial_solution)
+                  use_warmstart = true; options...)
+    model = Cbc.CbcCInterface.CbcModel()
+    Cbc.CbcCInterface.setParameter(model, "logLevel", "0")
+    for (name, value) in options
+        Cbc.CbcCInterface.setParameter(model, string(name), string(value))
     end
-    optimize!(model)
+
+    A, lb, ub = add_cycle_constraints_to_formulation(O)
+    Cbc.CbcCInterface.loadProblem(model, A, O.l, O.u, O.c, lb, ub)
+    Cbc.CbcCInterface.setObjSense(model, -1) # Maximize
+
+    for i in 1:size(A, 2)
+        Cbc.CbcCInterface.setInteger(model, i - 1)
+    end
+    if !isempty(initial_solution) && use_warmstart
+        Cbc.CbcCInterface.setMIPStartI(model, collect(Cint.(eachindex(initial_solution) .- 1)),
+                                       initial_solution)
+    end
+    Cbc.CbcCInterface.solve(model)
    
     attrs = Dict()
-    attrs[:objbound] = getobjbound(model)
+    attrs[:objbound] = Cbc.CbcCInterface.getBestPossibleObjValue(model)
     attrs[:solver] = :ip
-    solution = Solution(status(model), getobjval(model),
-                        getsolution(model), attrs)
+    solution = Solution(cbc_status(model), Cbc.CbcCInterface.getObjValue(model),
+                        Cbc.CbcCInterface.getColSolution(model), attrs)
     return solution
+end
+
+function cbc_status(model)
+    if Cbc.CbcCInterface.isProvenOptimal(model)
+        return :Optimal
+    elseif Cbc.CbcCInterface.isProvenInfeasible(model)
+        return :Infeasible
+    elseif Cbc.CbcCInterface.isContinuousUnbounded(model)
+        return :Unbounded # is this correct?
+    elseif (Cbc.CbcCInterface.isNodeLimitReached(model) ||
+            Cbc.CbcCInterface.isSecondsLimitReached(model) ||
+            Cbc.CbcCInterface.isSolutionLimitReached(model))
+        return :UserLimit
+    elseif Cbc.CbcCInterface.isAbandoned(model)
+        return :Error
+    else
+        return :InternalError
+    end
 end
 
 function add_cycle_constraints_to_formulation(O::OptProblem)
