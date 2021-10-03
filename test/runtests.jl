@@ -479,4 +479,8 @@ end
                                                   weights = w)
     @test_throws ErrorException find_longest_cycle(gu, 10, log_level = 0,
                                                    weights = w)
+
+    # Let's have a small test of LP mode, mostly to see that it works at all.
+    @test find_longest_path(g, 1, log_level = 0, max_iterations = 1,
+                            solver_mode = "lp").upper_bound == 26
 end
