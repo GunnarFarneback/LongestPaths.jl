@@ -1110,19 +1110,34 @@ mutable struct Solution
 end
 
 function solve_LP(O::OptProblem)
-    model = Clp.ClpModel()
-    solve = Clp.ClpSolve()
-    Clp.set_log_level(model, 0)
+    model = Clp.Clp_newModel()
+    solve = Clp.ClpSolve_new()
+    Clp.Clp_setLogLevel(model, 0)
     A, lb, ub = add_cycle_constraints_to_formulation(O)
-    Clp.load_problem(model, A, O.l, O.u, O.c, lb, ub)
-    Clp.set_obj_sense(model, -1.0) # Maximize.
-    Clp.initial_solve_with_options(model, solve)
+    clp_loadproblem!(model, A, O.l, O.u, O.c, lb, ub)
+    Clp.Clp_setObjSense(model, -1) # Maximize.
+    Clp.Clp_initialSolveWithOptions(model, solve)
     attrs = Dict()
-    attrs[:redcost] = Clp.dual_column_solution(model)
-    attrs[:lambda] = Clp.dual_row_solution(model)
+    attrs[:redcost] = Clp.Clp_getReducedCost(model)
+    attrs[:lambda] = Clp.Clp_getRowPrice(model)
     attrs[:solver] = :lp
-    solution = Solution(clp_status(model), Clp.objective_value(model),
-                        Clp.primal_column_solution(model), attrs)
+    solution = Solution(clp_status(model), Clp.Clp_getObjValue(model),
+                        copy(unsafe_wrap(Array,
+                                         Clp.Clp_getColSolution(model),
+                                         (size(A, 2),))),
+                        attrs)
+    Clp.ClpSolve_delete(solve)
+    Clp.Clp_deleteModel(model)
+    return solution
+end
+
+function clp_loadproblem!(model, A, l, u, c, lb, ub)
+    Clp.Clp_loadProblem(model, size(A, 2), size(A, 1),
+                        Clp.CoinBigIndex.(A.colptr .- 1),
+                        Int32.(A.rowval .- 1),
+                        Float64.(A.nzval),
+                        Float64.(l), Float64.(u), Float64.(c),
+                        Float64.(lb), Float64.(ub))
 end
 
 function clp_status(model)
@@ -1131,7 +1146,7 @@ function clp_status(model)
                     2 => :Unbounded,
                     3 => :UserLimit,
                     4 => :Error),
-               Clp.status(model), :InternalError)
+               Clp.Clp_status(model), :InternalError)
 end
 
 function solve_IP(O::OptProblem, initial_solution = Int[],
@@ -1162,7 +1177,8 @@ function solve_IP(O::OptProblem, initial_solution = Int[],
     solution = Solution(cbc_status(model), Cbc.Cbc_getObjValue(model),
                         copy(unsafe_wrap(Array,
                                          Cbc.Cbc_getColSolution(model),
-                                         (size(A, 2),))), attrs)
+                                         (size(A, 2),))),
+                        attrs)
     Cbc.Cbc_deleteModel(model)
     return solution
 end
