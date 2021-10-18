@@ -1,7 +1,7 @@
 using Test
 using LongestPaths
 using LongestPaths: path_length
-using LightGraphs
+using Graphs
 
 # Brute force search for the longest path using dfs.
 function dfs_longest_path(g::AbstractGraph{T}, weights, first_vertex,
