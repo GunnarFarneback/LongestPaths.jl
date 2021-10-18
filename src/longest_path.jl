@@ -3,7 +3,7 @@ export LongestPathOrCycle, find_longest_path, find_longest_cycle,
 
 import Clp
 import Cbc
-using LightGraphs
+using Graphs
 using SparseArrays
 using Printf
 using Random
@@ -84,7 +84,7 @@ NP-hard problem, the required time will grow quickly with the graph
 size.
 
 For the time being, `graph` must be a **directed** graph from the
-`LightGraphs` package. The algorithm works for undirected graphs if
+`Graphs` package. The algorithm works for undirected graphs if
 they are represented as directed graphs with pairs of edges in both
 directions.
 
@@ -242,6 +242,7 @@ Notes:
 function find_longest_path(graph, first_vertex::Integer = 1,
                            last_vertex::Integer = 0;
                            weights = nothing, kwargs...)
+    graph = lightgraphs_deprecation(graph)
     w = get_weights(weights, false)
 
     # TODO: Do the reversal ourselves and perform the search?
@@ -273,8 +274,29 @@ end
 "$(main_docstring)"
 function find_longest_cycle(graph, first_vertex = 0;
                             weights = nothing, kwargs...)
+    graph = lightgraphs_deprecation(graph)
     w = get_weights(weights, true)
     return _pre_find_longest_path(graph, w, first_vertex, first_vertex; kwargs...)
+end
+
+# Terribly dirty function which translates graphs from LightGraphs to
+# identical graphs with Graphs types. This is only intended as a
+# transitory workaround.
+function lightgraphs_deprecation(graph)
+    type = typeof(graph)
+    if first(fullname(type.name.module)) != :LightGraphs
+        return graph
+    end
+    @warn("""LightGraphs input is deprecated in favor of Graphs, see
+             https://github.com/JuliaGraphs/Graphs.jl.
+             This version tries to automatically convert the graph
+             from LightGraphs to Graphs. This workaround will be removed
+             in a future version.""")
+    type_name = string(type.name.module, ".", type.name.name)
+    if !isempty(type.parameters)
+        type_name *= string("{", join(string.(type.parameters), ", "), "}")
+    end
+    return eval(Meta.parse(replace(type_name, "LightGraphs" => "Graphs")))((getfield(graph, field) for field in fieldnames(typeof(graph)))...)
 end
 
 function get_weights(weights::Nothing, is_cycle)
@@ -1481,8 +1503,6 @@ function constrain_cycles!(O::OptProblem, weights, cycles, edges,
     return length(O.cycle_constraints) - previous_number_of_constraints
 end
 
-# Borrowed from https://github.com/JuliaGraphs/LightGraphs.jl/pull/1095
-# until is has been merged and released.
 function get_cycle(g::AbstractGraph)
     return get_path_or_cycle(g, vertices(g), 0, true, false)
 end
