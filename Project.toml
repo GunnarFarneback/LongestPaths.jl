@@ -1,7 +1,7 @@
 name = "LongestPaths"
 uuid = "3a25c17e-307c-411a-a047-890a9a5fbb4d"
 authors = ["Gunnar Farnebäck <gunnar@lysator.liu.se>"]
-version = "0.2.3"
+version = "0.2.4"
 
 [deps]
 Cbc = "9961bab8-2fa3-5c5a-9d89-47fab24efd76"
@@ -13,7 +13,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
-Cbc = "0.8"
-Clp = "0.8"
+Cbc = "1"
+Clp = "1"
 Graphs = "1.4"
 julia = "1.3"
