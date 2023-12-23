@@ -12,7 +12,7 @@ At this time two search functions are provided:
 
     find_longest_path(graph, first_vertex = 1, last_vertex = 0; kwargs)
 
-Find the longest simple path in a directed LightGraphs graph, starting
+Find the longest simple path in a directed Graphs.jl `graph`, starting
 with `first_vertex` and ending in `last_vertex`. If `last_vertex` is 0
 the path may end anywhere. If time limits or other restrictions
 prevent finding an optimal path, an upper bound on the maximum length
@@ -20,7 +20,7 @@ is returned together with the longest path found.
 
     find_longest_cycle(graph, first_vertex = 0; kwargs)
 
-Find the longest simple cycle in a directed LightGraphs graph, which
+Find the longest simple cycle in a directed Graphs.jl `graph`, which
 includes `first_vertex`. If `first_vertex` is 0 the cycle may be
 anywhere. If time limits or other restrictions prevent finding an
 optimal cycle, an upper bound on the maximum length is returned
@@ -37,7 +37,7 @@ pkg> add LongestPaths
 
 ## Usage Example
 ```
-julia> using LongestPaths, LightGraphs
+julia> using LongestPaths, Graphs
 
 julia> g = erdos_renyi(500, 0.005, is_directed=true, seed=13)
 {500, 1286} directed simple Int64 graph
@@ -146,6 +146,6 @@ relaxation. That is also the default in the `longest_path` function.
 
 * Add search methods for finding long paths that don't involve solving
   optimization problems. These are already developed but need to be
-  upgraded to Julia 1.0, integrated with LightGraphs, and polished.
+  upgraded to Julia 1.0, integrated with Graphs.jl, and polished.
 
 * General polishing of the code.
